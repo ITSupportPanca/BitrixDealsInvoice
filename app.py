@@ -119,8 +119,16 @@ if not st.session_state.authenticated:
 # =====================================
 # HEADER
 # =====================================
-st.markdown('<div class="main-title">📊 Bitrix Deal Monitor</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Deals WON yang belum memiliki Invoice</div>', unsafe_allow_html=True)
+col_title, col_logout = st.columns([4, 1])
+with col_title:
+    st.markdown('<div class="main-title">📊 Bitrix Deal Monitor</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sub-title">Login sebagai: {st.session_state.logged_user}</div>', unsafe_allow_html=True)
+with col_logout:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🚪 Logout", use_container_width=True):
+        st.session_state.authenticated = False
+        st.session_state.logged_user = ""
+        st.rerun()
 st.divider()
 
 # =====================================
