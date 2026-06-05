@@ -77,7 +77,7 @@ if not st.session_state.authenticated:
     st.markdown('<div class="main-title">📊 Bitrix Deal Monitor</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Login untuk melanjutkan</div>', unsafe_allow_html=True)
     st.divider()
-    email = st.text_input("Email", placeholder="email@panca-kusuma.com")
+    email = st.text_input("Email", placeholder="Masukkan email...")
     pwd   = st.text_input("Password", type="password", placeholder="Masukkan password...")
     if st.button("Login", use_container_width=True):
         email_input = email.strip().lower()
