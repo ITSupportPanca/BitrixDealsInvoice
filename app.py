@@ -80,12 +80,12 @@ st.markdown("""
 # =====================================
 # LOAD SECRETS
 # =====================================
-APP_PASSWORD = st.secrets["APP_PASSWORD"]
-WEBHOOK  = st.secrets["BITRIX_WEBHOOK"]
-SMTP_HOST = st.secrets["SMTP_HOST"]
-SMTP_PORT = int(st.secrets["SMTP_PORT"])
-SMTP_USER = st.secrets["SMTP_USER"]
-SMTP_PASS = st.secrets["SMTP_PASS"]
+USERS      = st.secrets["users"]
+WEBHOOK    = st.secrets["BITRIX_WEBHOOK"]
+SMTP_HOST  = st.secrets["SMTP_HOST"]
+SMTP_PORT  = int(st.secrets["SMTP_PORT"])
+SMTP_USER  = st.secrets["SMTP_USER"]
+SMTP_PASS  = st.secrets["SMTP_PASS"]
 EMAIL_FROM = st.secrets["EMAIL_FROM"]
 TO_EMAIL   = st.secrets["TO_EMAIL"]
 CC_EMAIL   = st.secrets.get("CC_EMAIL", "")
@@ -97,18 +97,23 @@ DELAY = 0.3
 # =====================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
+if "logged_user" not in st.session_state:
+    st.session_state.logged_user = ""
 
 if not st.session_state.authenticated:
     st.markdown('<div class="main-title">📊 Bitrix Deal Monitor</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Masukkan password untuk melanjutkan</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Login untuk melanjutkan</div>', unsafe_allow_html=True)
     st.divider()
-    pwd = st.text_input("Password", type="password", placeholder="Masukkan password...")
+    email = st.text_input("Email", placeholder="email@panca-kusuma.com")
+    pwd   = st.text_input("Password", type="password", placeholder="Masukkan password...")
     if st.button("Login", use_container_width=True):
-        if pwd == APP_PASSWORD:
+        email_input = email.strip().lower()
+        if email_input in USERS and USERS[email_input] == pwd:
             st.session_state.authenticated = True
+            st.session_state.logged_user = email_input
             st.rerun()
         else:
-            st.error("❌ Password salah!")
+            st.error("❌ Email atau password salah!")
     st.stop()
 
 # =====================================
