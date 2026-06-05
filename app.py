@@ -80,6 +80,7 @@ st.markdown("""
 # =====================================
 # LOAD SECRETS
 # =====================================
+APP_PASSWORD = st.secrets["APP_PASSWORD"]
 WEBHOOK  = st.secrets["BITRIX_WEBHOOK"]
 SMTP_HOST = st.secrets["SMTP_HOST"]
 SMTP_PORT = int(st.secrets["SMTP_PORT"])
@@ -90,6 +91,25 @@ TO_EMAIL   = st.secrets["TO_EMAIL"]
 CC_EMAIL   = st.secrets.get("CC_EMAIL", "")
 
 DELAY = 0.3
+
+# =====================================
+# LOGIN GATE
+# =====================================
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.markdown('<div class="main-title">📊 Bitrix Deal Monitor</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Masukkan password untuk melanjutkan</div>', unsafe_allow_html=True)
+    st.divider()
+    pwd = st.text_input("Password", type="password", placeholder="Masukkan password...")
+    if st.button("Login", use_container_width=True):
+        if pwd == APP_PASSWORD:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("❌ Password salah!")
+    st.stop()
 
 # =====================================
 # HEADER
