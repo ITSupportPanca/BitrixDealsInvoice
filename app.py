@@ -24,53 +24,25 @@ st.set_page_config(
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono&display=swap');
-
-    html, body, [class*="css"] {
-        font-family: 'DM Sans', sans-serif;
-    }
-
-    .main-title {
-        font-size: 2rem;
-        font-weight: 600;
-        color: #1a1a2e;
-        margin-bottom: 0.2rem;
-    }
-    .sub-title {
-        color: #666;
-        font-size: 0.95rem;
-        margin-bottom: 2rem;
-    }
+    html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+    .main-title { font-size: 2rem; font-weight: 600; color: #1a1a2e; margin-bottom: 0.2rem; }
+    .sub-title { color: #666; font-size: 0.95rem; margin-bottom: 2rem; }
     .log-box {
-        background: #0f0f1a;
-        color: #7effa0;
-        font-family: 'DM Mono', monospace;
-        font-size: 0.8rem;
-        padding: 1rem;
-        border-radius: 8px;
-        max-height: 300px;
-        overflow-y: auto;
-        line-height: 1.8;
+        background: #0f0f1a; color: #7effa0;
+        font-family: 'DM Mono', monospace; font-size: 0.8rem;
+        padding: 1rem; border-radius: 8px; max-height: 300px;
+        overflow-y: auto; line-height: 1.8;
     }
     .stat-card {
-        background: #f8f9ff;
-        border-left: 4px solid #4361ee;
-        padding: 1rem 1.2rem;
-        border-radius: 6px;
-        margin-bottom: 0.8rem;
+        background: #f8f9ff; border-left: 4px solid #4361ee;
+        padding: 1rem 1.2rem; border-radius: 6px; margin-bottom: 0.8rem;
     }
     .stat-label { color: #888; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
     .stat-value { font-size: 1.8rem; font-weight: 600; color: #1a1a2e; }
     .stButton > button {
-        background: #4361ee;
-        color: white;
-        border: none;
-        padding: 0.7rem 2rem;
-        font-size: 1rem;
-        font-weight: 500;
-        border-radius: 8px;
-        width: 100%;
-        cursor: pointer;
-        transition: background 0.2s;
+        background: #4361ee; color: white; border: none;
+        padding: 0.7rem 2rem; font-size: 1rem; font-weight: 500;
+        border-radius: 8px; width: 100%; cursor: pointer; transition: background 0.2s;
     }
     .stButton > button:hover { background: #3451d1; }
     .stButton > button:disabled { background: #aaa; }
@@ -81,14 +53,15 @@ st.markdown("""
 # LOAD SECRETS
 # =====================================
 USERS      = st.secrets["users"]
+ADMINS     = set(k for k, v in st.secrets.get("admins", {}).items() if v)
 WEBHOOK    = st.secrets["config"]["BITRIX_WEBHOOK"]
 SMTP_HOST  = st.secrets["config"]["SMTP_HOST"]
 SMTP_PORT  = int(st.secrets["config"]["SMTP_PORT"])
 SMTP_USER  = st.secrets["config"]["SMTP_USER"]
 SMTP_PASS  = st.secrets["config"]["SMTP_PASS"]
 EMAIL_FROM = st.secrets["config"]["EMAIL_FROM"]
-TO_EMAIL   = st.secrets["config"]["TO_EMAIL"]
-CC_EMAIL   = st.secrets["config"].get("CC_EMAIL", "")
+CC_DIREKSI = st.secrets["config"].get("CC_EMAIL", "")
+# TO_EMAIL = email user yang login (dinamis)
 
 DELAY = 0.3
 
@@ -149,8 +122,7 @@ def bx_get(session, method, params, timeout=60):
             time.sleep(DELAY)
             return resp.json()
         except requests.exceptions.ConnectTimeout:
-            wait = attempt * 10
-            time.sleep(wait)
+            time.sleep(attempt * 10)
         except requests.exceptions.RequestException:
             break
     return {}
@@ -170,7 +142,93 @@ def bitrix_get_all(session, method, params, log_fn=None):
         start = data["next"]
     return results
 
-def get_all_users_batch(session, user_ids):
+def get_user_by_email(session, email):
+    """Cari user Bitrix berdasarkan email login"""
+    data = bx_get(session, "user.get.json", {
+        "filter[EMAIL]": email,
+        "select[]": ["ID", "NAME", "LAST_NAME", "EMAIL", "UF_DEPARTMENT"]
+    })
+    users = data.get("result", [])
+    return users[0] if users else None
+
+def get_dept_info(session, dept_id):
+    """Ambil info department by ID"""
+    data = bx_get(session, "department.get.json", {"ID": dept_id})
+    depts = data.get("result", [])
+    return depts[0] if depts else None
+
+def get_dept_members(session, dept_id):
+    """Ambil semua member dari satu department"""
+    members = bitrix_get_all(session, "user.get.json", {
+        "filter[UF_DEPARTMENT]": dept_id,
+        "select[]": ["ID", "NAME", "LAST_NAME", "EMAIL"]
+    }, log_fn=None)
+    return members
+
+def get_team_scope(session, current_user_bitrix_id, log_fn=None):
+    """
+    Logic universal:
+    1. Ambil semua dept yang dimiliki user
+    2. Kumpulkan semua member dari semua dept tersebut
+    3. Cari supervisor dari dept pertama (untuk CC email)
+    Return: (set of user IDs, supervisor info or None)
+    """
+    if log_fn:
+        log_fn("  → Mengambil info department user...")
+
+    user_data = bx_get(session, "user.get.json", {
+        "filter[ID]": current_user_bitrix_id,
+        "select[]": ["ID", "NAME", "LAST_NAME", "EMAIL", "UF_DEPARTMENT"]
+    })
+    users = user_data.get("result", [])
+    if not users:
+        return {str(current_user_bitrix_id)}, None
+
+    current_user = users[0]
+    dept_ids = current_user.get("UF_DEPARTMENT", [])
+    if not dept_ids:
+        return {str(current_user_bitrix_id)}, None
+
+    if not isinstance(dept_ids, list):
+        dept_ids = [dept_ids]
+
+    if log_fn:
+        log_fn(f"  → User terdaftar di {len(dept_ids)} department")
+
+    all_member_ids = set()
+    supervisor_info = None
+
+    for dept_id in dept_ids:
+        dept = get_dept_info(session, dept_id)
+        if not dept:
+            continue
+
+        dept_name = dept.get("NAME", dept_id)
+        members = get_dept_members(session, dept_id)
+        member_ids = {str(m["ID"]) for m in members}
+        all_member_ids.update(member_ids)
+
+        if log_fn:
+            log_fn(f"  → Dept '{dept_name}': {len(member_ids)} member")
+
+        # Cari supervisor dari dept pertama (untuk CC)
+        if supervisor_info is None:
+            head_id = str(dept.get("UF_HEAD", ""))
+            if head_id and head_id != str(current_user_bitrix_id):
+                sup_data = bx_get(session, "user.get.json", {
+                    "filter[ID]": head_id,
+                    "select[]": ["ID", "NAME", "LAST_NAME", "EMAIL"]
+                })
+                sups = sup_data.get("result", [])
+                if sups:
+                    supervisor_info = sups[0]
+
+    # Pastikan user sendiri selalu masuk
+    all_member_ids.add(str(current_user_bitrix_id))
+
+    return all_member_ids, supervisor_info
+
+def get_users_info_batch(session, user_ids):
     unique_ids = list(set(str(uid) for uid in user_ids if uid))
     user_map = {}
     for i in range(0, len(unique_ids), 50):
@@ -201,7 +259,7 @@ def get_all_companies_batch(session, company_ids):
             company_map[str(c["ID"])] = c.get("TITLE", "-")
     return company_map
 
-def send_email(deals):
+def send_email(to_email, cc_email, deals, sender_name=""):
     df = pd.DataFrame(deals)
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -212,12 +270,12 @@ def send_email(deals):
     msg = MIMEMultipart("mixed")
     msg["Subject"] = "Deals WON Belum Invoice"
     msg["From"] = EMAIL_FROM
-    msg["To"] = TO_EMAIL
-    if CC_EMAIL:
-        msg["Cc"] = CC_EMAIL
+    msg["To"] = to_email
+    if cc_email:
+        msg["Cc"] = cc_email
 
     body = MIMEMultipart("alternative")
-    html = """
+    html = f"""
     <html><body>
     <p>Halo,</p>
     <p>Berikut kami lampirkan daftar deals WON yang belum memiliki invoice.</p>
@@ -234,9 +292,10 @@ def send_email(deals):
     part.add_header("Content-Disposition", 'attachment; filename="deals_belum_invoice.xlsx"')
     msg.attach(part)
 
-    recipients = [TO_EMAIL]
-    if CC_EMAIL:
-        recipients += [cc.strip() for cc in CC_EMAIL.split(",")]
+    recipients = [to_email]
+    if cc_email:
+        recipients += [cc.strip() for cc in cc_email.split(",") if cc.strip()]
+
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
         server.login(SMTP_USER, SMTP_PASS)
         server.sendmail(EMAIL_FROM, recipients, msg.as_string())
@@ -260,15 +319,54 @@ if run_btn:
     def log(msg):
         logs.append(msg)
         log_placeholder.markdown(
-            '<div class="log-box">' +
-            "<br>".join(logs[-20:]) +
-            '</div>',
+            '<div class="log-box">' + "<br>".join(logs[-20:]) + '</div>',
             unsafe_allow_html=True
         )
 
     try:
         session = make_session()
+        logged_email = st.session_state.logged_user
 
+        # Cari user Bitrix berdasarkan email login
+        log(f"🔍 Mencari akun Bitrix untuk {logged_email}...")
+        bitrix_user = get_user_by_email(session, logged_email)
+        if not bitrix_user:
+            st.error(f"❌ Email {logged_email} tidak ditemukan di Bitrix24!")
+            st.stop()
+
+        bitrix_user_id = str(bitrix_user["ID"])
+        user_fullname = f"{bitrix_user.get('NAME','')} {bitrix_user.get('LAST_NAME','')}".strip()
+        log(f"✅ Ditemukan: {user_fullname} (ID: {bitrix_user_id})")
+
+        # Cek apakah super admin
+        is_admin = logged_email in ADMINS
+
+        # Cek struktur tim
+        to_email = logged_email
+        cc_parts = []
+
+        if is_admin:
+            log("👑 Mode: Super Admin — akses semua deals")
+            team_ids = None  # None = tidak filter, ambil semua
+        else:
+            log("🏢 Mengecek struktur tim dari Bitrix...")
+            team_ids, supervisor = get_team_scope(session, bitrix_user_id, log_fn=log)
+            log(f"✅ Total user dalam scope: {len(team_ids)}")
+            if supervisor:
+                sup_email = supervisor.get("EMAIL", "")
+                if sup_email and sup_email != logged_email:
+                    cc_parts.append(sup_email)
+                    log(f"📬 CC ke supervisor: {sup_email}")
+
+        if CC_DIREKSI:
+            for e in CC_DIREKSI.split(","):
+                e = e.strip()
+                if e and e not in cc_parts:
+                    cc_parts.append(e)
+            log(f"📬 CC ke direksi: {CC_DIREKSI}")
+        cc_email = ", ".join(cc_parts)
+
+        # Ambil semua deals WON
         log("📋 Mengambil deals WON...")
         all_deals = bitrix_get_all(session, "crm.deal.list.json", {
             "filter[STAGE_SEMANTIC_ID]": "S",
@@ -276,6 +374,14 @@ if run_btn:
         }, log_fn=log)
         log(f"✅ Total deals WON: {len(all_deals)}")
 
+        # Filter deals
+        if team_ids is None:
+            team_deals = all_deals  # admin = semua deals
+        else:
+            team_deals = [d for d in all_deals if str(d.get("ASSIGNED_BY_ID", "")) in team_ids]
+        log(f"✅ Deals dalam scope: {len(team_deals)}")
+
+        # Ambil invoice
         log("📄 Mengambil invoice...")
         invoice_deal_ids = set()
         all_invoices = bitrix_get_all(session, "crm.invoice.list.json", {"select": ["UF_DEAL_ID"]}, log_fn=log)
@@ -285,11 +391,18 @@ if run_btn:
                 invoice_deal_ids.add(str(did))
         log(f"✅ Deal sudah ada invoice: {len(invoice_deal_ids)}")
 
-        deals_filtered = [d for d in all_deals if str(d["ID"]) not in invoice_deal_ids]
+        # Filter belum invoice
+        deals_filtered = [d for d in team_deals if str(d["ID"]) not in invoice_deal_ids]
         log(f"📊 Deals WON belum invoice: {len(deals_filtered)}")
 
+        if not deals_filtered:
+            log("🎉 Semua deals sudah punya invoice!")
+            st.success("✅ Semua deals sudah punya invoice. Tidak ada email yang dikirim.")
+            st.stop()
+
+        # Ambil info user & company
         log("👤 Mengambil info user & company...")
-        user_map = get_all_users_batch(session, [d.get("ASSIGNED_BY_ID") for d in deals_filtered])
+        user_map = get_users_info_batch(session, [d.get("ASSIGNED_BY_ID") for d in deals_filtered])
         company_map = get_all_companies_batch(session, [d.get("COMPANY_ID") for d in deals_filtered])
 
         all_clean_deals = []
@@ -299,7 +412,6 @@ if run_btn:
             ui = user_map.get(uid, {"name": "-", "position": "-", "email": "-"})
             all_clean_deals.append({
                 "Deal ID": deal.get("ID"),
-                "Company ID": cid or "-",
                 "Company Name": company_map.get(cid, "-"),
                 "Deal Name": deal.get("TITLE"),
                 "Stage": deal.get("STAGE_ID"),
@@ -307,9 +419,12 @@ if run_btn:
                 "Responsible": ui["name"],
             })
 
-        log("📧 Mengirim email...")
-        excel_data = send_email(all_clean_deals)
-        log(f"✅ Email terkirim ke {TO_EMAIL}!")
+        # Kirim email
+        log(f"📧 Mengirim email ke {to_email}...")
+        if cc_email:
+            log(f"   CC: {cc_email}")
+        excel_data = send_email(to_email, cc_email, all_clean_deals, user_fullname)
+        log(f"✅ Email terkirim!")
         log("🎉 Selesai!")
 
         st.session_state.result_df = pd.DataFrame(all_clean_deals)
