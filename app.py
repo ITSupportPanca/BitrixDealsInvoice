@@ -81,14 +81,14 @@ st.markdown("""
 # LOAD SECRETS
 # =====================================
 USERS      = st.secrets["users"]
-WEBHOOK    = st.secrets["BITRIX_WEBHOOK"]
-SMTP_HOST  = st.secrets["SMTP_HOST"]
-SMTP_PORT  = int(st.secrets["SMTP_PORT"])
-SMTP_USER  = st.secrets["SMTP_USER"]
-SMTP_PASS  = st.secrets["SMTP_PASS"]
-EMAIL_FROM = st.secrets["EMAIL_FROM"]
-TO_EMAIL   = st.secrets["TO_EMAIL"]
-CC_EMAIL   = st.secrets.get("CC_EMAIL", "")
+WEBHOOK    = st.secrets["config"]["BITRIX_WEBHOOK"]
+SMTP_HOST  = st.secrets["config"]["SMTP_HOST"]
+SMTP_PORT  = int(st.secrets["config"]["SMTP_PORT"])
+SMTP_USER  = st.secrets["config"]["SMTP_USER"]
+SMTP_PASS  = st.secrets["config"]["SMTP_PASS"]
+EMAIL_FROM = st.secrets["config"]["EMAIL_FROM"]
+TO_EMAIL   = st.secrets["config"]["TO_EMAIL"]
+CC_EMAIL   = st.secrets["config"].get("CC_EMAIL", "")
 
 DELAY = 0.3
 
