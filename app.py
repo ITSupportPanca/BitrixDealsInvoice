@@ -20,15 +20,15 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ==================== CONFIG ====================
-WEBHOOK    = "https://pancakusumaraya.bitrix24.com/rest/29/5acp30c8b9f11lq8/"
+WEBHOOK    = st.secrets["config"]["BITRIX_WEBHOOK"]
 DELAY      = 0.3
 
-SMTP_HOST  = "smtp.ipage.com"
-SMTP_PORT  = 465
-SMTP_USER  = "it.support01@panca-kusuma.com"
-SMTP_PASS  = st.secrets["SMTP_PASS"]
-EMAIL_FROM = "it.support01@panca-kusuma.com"
-CC_EMAILS  = ["it.support02@panca-kusuma.com"]  # tambah/kurangi sesuai kebutuhan
+SMTP_HOST  = st.secrets["config"]["SMTP_HOST"]
+SMTP_PORT  = int(st.secrets["config"]["SMTP_PORT"])
+SMTP_USER  = st.secrets["config"]["SMTP_USER"]
+SMTP_PASS  = st.secrets["config"]["SMTP_PASS"]
+EMAIL_FROM = st.secrets["config"]["EMAIL_FROM"]
+CC_EMAILS  = [st.secrets["config"]["CC_EMAIL"]]
 # ================================================
 
 
