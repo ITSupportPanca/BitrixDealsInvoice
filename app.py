@@ -328,10 +328,43 @@ def send_email(to_email, excel_data, df):
         server.sendmail(EMAIL_FROM, recipients, msg.as_string())
 
 
+# ==================== LOGIN ====================
+def check_login(email, password):
+    users = st.secrets.get("users", {})
+    return users.get(email) == password
+
+def login_page():
+    st.set_page_config(page_title="Login - Bitrix24 Report", page_icon="🔐", layout="centered")
+    st.title("🔐 Login")
+    with st.form("form_login"):
+        email    = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        submit   = st.form_submit_button("Login", type="primary")
+        if submit:
+            if check_login(email, password):
+                st.session_state["logged_in"] = True
+                st.session_state["user_email"] = email
+                st.rerun()
+            else:
+                st.error("Email atau password salah!")
+
+if not st.session_state.get("logged_in"):
+    login_page()
+    st.stop()
+
 # ==================== STREAMLIT UI ====================
 st.set_page_config(page_title="Bitrix24 Outstanding Report", page_icon="📊", layout="wide")
-st.title("📊 Bitrix24 - Outstanding Deals Report")
-st.caption("Deals WON dengan qty yang belum sepenuhnya diinvoice")
+
+col_title, col_logout = st.columns([4, 1])
+with col_title:
+    st.title("📊 Bitrix24 - Outstanding Deals Report")
+    st.caption("Deals WON dengan qty yang belum sepenuhnya diinvoice")
+with col_logout:
+    st.write("")
+    st.write("")
+    if st.button("Logout"):
+        st.session_state.clear()
+        st.rerun()
 
 if st.button("🔄 Ambil Data", type="primary"):
     df = fetch_data()
