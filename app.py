@@ -21,7 +21,7 @@ from urllib3.util.retry import Retry
 
 # ==================== CONFIG ====================
 WEBHOOK    = st.secrets["config"]["BITRIX_WEBHOOK"]
-DELAY      = 0.3
+DELAY      = 0.1
 
 SMTP_HOST  = st.secrets["config"]["SMTP_HOST"]
 SMTP_PORT  = int(st.secrets["config"]["SMTP_PORT"])
@@ -115,19 +115,20 @@ def fetch_data():
                          "ASSIGNED_BY_ID", "DATE_CLOSED", "CURRENCY_ID"]
         }
     )
-    progress.progress(20)
+    progress.progress(15)
     status.text(f"✅ {len(all_deals)} deals WON ditemukan")
 
-    # STEP 2 - Semua invoice (ID, UF_DEAL_ID, ACCOUNT_NUMBER, DATE_BILL, STATUS_ID)
+    # STEP 2 - Semua invoice sekaligus
     status.text("📄 Mengambil data invoice...")
     all_invoices_raw = bitrix_get_all(
         "crm.invoice.list.json",
         {"select": ["ID", "UF_DEAL_ID", "ACCOUNT_NUMBER", "DATE_BILL", "STATUS_ID"]}
     )
-    progress.progress(45)
+    progress.progress(30)
 
     # Build invoice map per deal_id
     invoice_map = defaultdict(list)
+    all_invoice_ids = []
     for inv in all_invoices_raw:
         deal_id = str(inv.get("UF_DEAL_ID", ""))
         if deal_id and deal_id != "0" and inv.get("STATUS_ID") != "D":
@@ -136,86 +137,109 @@ def fetch_data():
                 "number": inv.get("ACCOUNT_NUMBER", inv.get("ID", "")),
                 "date":   inv.get("DATE_BILL", "")[:10] if inv.get("DATE_BILL") else ""
             })
+            all_invoice_ids.append(inv.get("ID"))
 
-    # STEP 3 - Batch user
+    # STEP 3 - Fetch SEMUA invoice product rows sekaligus (bukan per invoice)
+    status.text("📦 Mengambil product rows semua invoice...")
+    inv_product_map = defaultdict(list)  # invoice_id -> list of products
+    chunk_size = 50
+    unique_inv_ids = list(set(str(i) for i in all_invoice_ids if i))
+
+    for i in range(0, len(unique_inv_ids), chunk_size):
+        chunk = unique_inv_ids[i:i+chunk_size]
+        params = {
+            "filter[OWNER_TYPE]": "I",
+            "select[]": ["OWNER_ID", "PRODUCT_ID", "PRODUCT_NAME", "QUANTITY"],
+        }
+        for j, inv_id in enumerate(chunk):
+            params[f"filter[OWNER_ID][{j}]"] = inv_id
+        data = bx_post("crm.productrow.list", params)
+        for p in (data.get("result", []) or []):
+            owner_id = str(p.get("OWNER_ID", ""))
+            inv_product_map[owner_id].append(p)
+        pct = 30 + int((i + chunk_size) / len(unique_inv_ids) * 20) if unique_inv_ids else 50
+        progress.progress(min(pct, 50))
+
+    progress.progress(50)
+
+    # STEP 4 - Fetch SEMUA deal product rows sekaligus
+    status.text("📦 Mengambil product rows semua deals...")
+    deal_product_map = defaultdict(list)  # deal_id -> list of products
+    all_deal_ids = [str(d["ID"]) for d in all_deals]
+
+    for i in range(0, len(all_deal_ids), chunk_size):
+        chunk = all_deal_ids[i:i+chunk_size]
+        for deal_id in chunk:
+            data = bx_post("crm.deal.productrows.get", {"id": deal_id})
+            products = data.get("result", [])
+            if isinstance(products, list):
+                deal_product_map[deal_id] = products
+        pct = 50 + int((i + chunk_size) / len(all_deal_ids) * 25) if all_deal_ids else 75
+        progress.progress(min(pct, 75))
+        status.text(f"📦 Mengambil product rows deals... {min(i+chunk_size, len(all_deal_ids))}/{len(all_deal_ids)}")
+
+    progress.progress(75)
+
+    # STEP 5 - Batch user
     status.text("👤 Mengambil info user...")
     all_user_ids = [d.get("ASSIGNED_BY_ID") for d in all_deals]
     user_map = get_users_batch(all_user_ids)
-    progress.progress(55)
+    progress.progress(85)
 
-    # STEP 4 - Loop per deal, ambil product rows + invoice products
-    status.text("📦 Mengambil product rows per deal...")
+    # STEP 6 - Build rows
+    status.text("🔨 Membangun data...")
     rows = []
-    total = len(all_deals)
-
-    for i, deal in enumerate(all_deals):
+    for deal in all_deals:
         deal_id    = str(deal["ID"])
         user_id    = str(deal.get("ASSIGNED_BY_ID", ""))
         date_won   = deal.get("DATE_CLOSED", "")[:10] if deal.get("DATE_CLOSED") else ""
         responsible = user_map.get(user_id, user_id)
 
-        # Invoice label
         inv_list = invoice_map.get(deal_id, [])
         invoice_label = ", ".join(
             f"{inv['number']} ({inv['date']})" if inv['date'] else inv['number']
             for inv in inv_list
         ) if inv_list else "-"
 
-        # Invoiced qty per product
+        # Hitung invoiced qty dari cache
         invoiced_qty = defaultdict(float)
         for inv in inv_list:
-            inv_products_data = bx_post("crm.productrow.list", {
-                "filter": {"OWNER_TYPE": "I", "OWNER_ID": int(inv["id"])},
-                "select": ["PRODUCT_ID", "PRODUCT_NAME", "QUANTITY"]
-            })
-            inv_products = inv_products_data.get("result", [])
-            if isinstance(inv_products, list):
-                for p in inv_products:
-                    pid = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
-                    invoiced_qty[pid] += float(p.get("QUANTITY", 0))
+            for p in inv_product_map.get(str(inv["id"]), []):
+                pid = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
+                invoiced_qty[pid] += float(p.get("QUANTITY", 0))
 
-        # Deal product rows
-        deal_prod_data = bx_post("crm.deal.productrows.get", {"id": deal["ID"]})
-        deal_products  = deal_prod_data.get("result", [])
-        if not isinstance(deal_products, list):
-            deal_products = []
-
+        deal_products = deal_product_map.get(deal_id, [])
         if not deal_products:
-            # Deal tanpa product rows — skip
             continue
 
         for p in deal_products:
-            pid         = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
-            qty_ordered = float(p.get("QUANTITY", 0))
-            qty_invoiced = invoiced_qty.get(pid, 0)
-            outstanding  = qty_ordered - qty_invoiced
+            pid           = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
+            qty_ordered   = float(p.get("QUANTITY", 0))
+            qty_invoiced  = invoiced_qty.get(pid, 0)
+            outstanding   = qty_ordered - qty_invoiced
 
             if outstanding <= 0:
-                continue  # sudah full invoiced, skip
+                continue
 
-            unit_price       = float(p.get("PRICE", 0))
+            unit_price        = float(p.get("PRICE", 0))
             outstanding_value = outstanding * unit_price
 
             rows.append({
-                "Deal ID":          deal["ID"],
-                "Deal Name":        deal.get("TITLE", ""),
-                "Stage":            deal.get("STAGE_ID", ""),
-                "Amount":           deal.get("OPPORTUNITY", 0),
-                "Responsible":      responsible,
-                "Deal Date (WON)":  date_won,
-                "Product Name":     p.get("PRODUCT_NAME", ""),
-                "Unit":             p.get("MEASURE_NAME", ""),
-                "Unit Price":       unit_price,
-                "Qty Ordered":      qty_ordered,
-                "Qty Invoiced":     qty_invoiced,
-                "Outstanding Qty":  outstanding,
+                "Deal ID":           deal["ID"],
+                "Deal Name":         deal.get("TITLE", ""),
+                "Stage":             deal.get("STAGE_ID", ""),
+                "Amount":            deal.get("OPPORTUNITY", 0),
+                "Responsible":       responsible,
+                "Deal Date (WON)":   date_won,
+                "Product Name":      p.get("PRODUCT_NAME", ""),
+                "Unit":              p.get("MEASURE_NAME", ""),
+                "Unit Price":        unit_price,
+                "Qty Ordered":       qty_ordered,
+                "Qty Invoiced":      qty_invoiced,
+                "Outstanding Qty":   outstanding,
                 "Outstanding Value": outstanding_value,
-                "Invoices":         invoice_label,
+                "Invoices":          invoice_label,
             })
-
-        # Update progress
-        pct = 55 + int((i + 1) / total * 40)
-        progress.progress(min(pct, 95))
 
     progress.progress(100)
     status.text(f"✅ Selesai! {len(rows)} baris data ditemukan.")
@@ -236,7 +260,6 @@ def build_excel(df):
 
         ws = writer.sheets["Outstanding Report"]
 
-        # Header style
         header_fill = PatternFill("solid", start_color="1F4E79", end_color="1F4E79")
         header_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
         for cell in ws[1]:
@@ -244,7 +267,6 @@ def build_excel(df):
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-        # Data style
         data_font = Font(name="Arial", size=10)
         for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
             fill_color = "FFFFFF" if row_idx % 2 == 0 else "EBF3FB"
@@ -254,7 +276,6 @@ def build_excel(df):
                 cell.fill = fill
                 cell.alignment = Alignment(vertical="center")
 
-        # Number format
         col_map = {cell.value: cell.column for cell in ws[1]}
         for col_name in ["Unit Price", "Outstanding Value", "Amount"]:
             if col_name in col_map:
@@ -269,18 +290,16 @@ def build_excel(df):
                     for c in cell:
                         c.number_format = "#,##0"
 
-        # Column width
         for col in ws.columns:
             max_len = max((len(str(c.value)) if c.value else 0) for c in col)
             ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 4, 40)
         ws.freeze_panes = "A2"
 
-        # Summary sheet
         if not df.empty:
             summary = {
-                "Total Deals":              [df["Deal ID"].nunique()],
-                "Total Outstanding Qty":    [df["Outstanding Qty"].sum()],
-                "Total Outstanding Value":  [df["Outstanding Value"].sum()],
+                "Total Deals":             [df["Deal ID"].nunique()],
+                "Total Outstanding Qty":   [df["Outstanding Qty"].sum()],
+                "Total Outstanding Value": [df["Outstanding Value"].sum()],
             }
             pd.DataFrame(summary).to_excel(writer, index=False, sheet_name="Summary")
 
@@ -379,7 +398,6 @@ if "df" in st.session_state:
     if df.empty:
         st.info("Tidak ada data outstanding ditemukan.")
     else:
-        # Metric summary
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Deals", df["Deal ID"].nunique())
         col2.metric("Total Outstanding Qty", f"{df['Outstanding Qty'].sum():,.0f}")
@@ -389,7 +407,6 @@ if "df" in st.session_state:
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.divider()
 
-        # Download + Email
         col_dl, col_email = st.columns([1, 2])
 
         with col_dl:
