@@ -161,7 +161,7 @@ def fetch_data():
         progress.progress(min(pct, 50))
 
     progress.progress(50)
-st.info(f"""
+    st.info(f"""
 📊 Summary data yang akan diproses:
 - Total deals WON: {len(all_deals)}
 - Deals yang punya invoice: {len([d for d in all_deals if str(d['ID']) in invoice_map])}
@@ -169,7 +169,7 @@ st.info(f"""
 - Total invoice: {len(all_invoices_raw)}
 - Total invoice IDs unik: {len(unique_inv_ids)}
 """)
-st.stop()  # stop dulu biar bisa liat angkanya
+    st.stop()  # stop dulu biar bisa liat angkanya
     # STEP 4 - Fetch SEMUA deal product rows sekaligus
     status.text("📦 Mengambil product rows semua deals...")
     deal_product_map = defaultdict(list)  # deal_id -> list of products
