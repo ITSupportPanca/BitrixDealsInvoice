@@ -171,7 +171,21 @@ def fetch_data():
             owner_id = str(p.get("OWNER_ID", ""))
             inv_product_map[owner_id].append(p)
     progress.progress(60)
+    # Cek deal 73015
+    test_deal_id = "73015"
+    test_inv_list = invoice_map.get(test_deal_id, [])
+    st.write("Invoice list untuk deal 73015:", test_inv_list)
 
+# Cek product rows invoice-nya
+for inv in test_inv_list:
+    st.write(f"Products untuk invoice {inv['number']} (ID: {inv['id']}):", 
+             inv_product_map.get(str(inv["id"]), "KOSONG"))
+
+st.stop()
+
+
+
+    
     # STEP 5 - Batch user
     status.text("👤 Mengambil info user...")
     all_user_ids = [d.get("ASSIGNED_BY_ID") for d in deals_to_process]
