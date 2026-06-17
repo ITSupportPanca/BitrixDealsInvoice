@@ -176,8 +176,8 @@ def fetch_data():
     test_inv_list = invoice_map.get(test_deal_id, [])
     st.write("Invoice list untuk deal 73015:", test_inv_list)
 
-# Cek product rows invoice-nya
-for inv in test_inv_list:
+    # Cek product rows invoice-nya
+    for inv in test_inv_list:
     st.write(f"Products untuk invoice {inv['number']} (ID: {inv['id']}):", 
              inv_product_map.get(str(inv["id"]), "KOSONG"))
 
