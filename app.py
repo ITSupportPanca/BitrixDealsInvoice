@@ -117,7 +117,10 @@ def fetch_data():
     )
     progress.progress(15)
     status.text(f"✅ {len(all_deals)} deals WON ditemukan")
-
+# Cek sample DATE_CLOSED
+sample = [(d["ID"], d.get("DATE_CLOSED")) for d in all_deals[:5]]
+st.write("Sample DATE_CLOSED:", sample)
+st.stop()
     # STEP 2 - Semua invoice sekaligus
     status.text("📄 Mengambil data invoice...")
     all_invoices_raw = bitrix_get_all(
@@ -162,14 +165,7 @@ def fetch_data():
 
     progress.progress(50)
     st.info(f"""
-📊 Summary data yang akan diproses:
-- Total deals WON: {len(all_deals)}
-- Deals yang punya invoice: {len([d for d in all_deals if str(d['ID']) in invoice_map])}
-- Deals tanpa invoice: {len([d for d in all_deals if str(d['ID']) not in invoice_map])}
-- Total invoice: {len(all_invoices_raw)}
-- Total invoice IDs unik: {len(unique_inv_ids)}
-""")
-    st.stop()  # stop dulu biar bisa liat angkanya
+
     # STEP 4 - Fetch SEMUA deal product rows sekaligus
     status.text("📦 Mengambil product rows semua deals...")
     deal_product_map = defaultdict(list)  # deal_id -> list of products
