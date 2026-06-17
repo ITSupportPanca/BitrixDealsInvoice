@@ -1,5 +1,7 @@
 """
-Bitrix24 - Deals Outstanding Report
+Bitrix24 - CRM Report App
+Halaman 1: Deals Belum Invoice
+Halaman 2: Outstanding Qty
 """
 
 import streamlit as st
@@ -98,50 +100,23 @@ def get_users_batch(user_ids):
     return user_map
 
 
-def debug_single_deal(deal_id):
-    st.write(f"### 🔍 Debug Deal ID: {deal_id}")
-
-    # Cek deal
-    deal_data = bx_post("crm.deal.get", {"id": deal_id})
-    deal = deal_data.get("result", {})
-    st.write("**Deal info:**", {
-        "ID": deal.get("ID"),
-        "Title": deal.get("TITLE"),
-        "Stage": deal.get("STAGE_ID"),
-        "Amount": deal.get("OPPORTUNITY"),
-    })
-
-    # Cek invoice
-    st.write("**Mencari invoice untuk deal ini...**")
-    inv_data = bx_post("crm.invoice.list", {
-        "filter": {"UF_DEAL_ID": deal_id},
-        "select": ["ID", "ACCOUNT_NUMBER", "STATUS_ID", "DATE_BILL", "PRICE"]
-    })
-    invoices = inv_data.get("result", [])
-    st.write(f"Invoice ditemukan: {len(invoices)}")
-    for inv in invoices:
-        st.write(f"  - Invoice {inv.get('ACCOUNT_NUMBER')} (ID:{inv.get('ID')}) | Status:{inv.get('STATUS_ID')} | Amount:{inv.get('PRICE')}")
-
-        # Cek product rows invoice
-        prod_data = bx_post("crm.productrow.list", {
-            "filter": {"OWNER_TYPE": "I", "OWNER_ID": int(inv["ID"])},
-            "select": ["OWNER_ID", "PRODUCT_ID", "PRODUCT_NAME", "QUANTITY"]
-        })
-        prods = prod_data.get("result", [])
-        st.write(f"    Product rows: {len(prods)}")
-        for p in prods:
-            st.write(f"      • {p.get("PRODUCT_NAME")} — Qty: {p.get("QUANTITY")} | PRODUCT_ID: {p.get("PRODUCT_ID")} | KEY: {str(p.get("PRODUCT_ID") or p.get("PRODUCT_NAME"))}")
-
-    # Cek deal product rows
-    st.write("**Deal product rows:**")
-    deal_prod_data = bx_post("crm.deal.productrows.get", {"id": deal_id})
-    deal_prods = deal_prod_data.get("result", [])
-    st.write(f"Deal products ditemukan: {len(deal_prods)}")
-    for p in deal_prods:
-        st.write(f"  • {p.get("PRODUCT_NAME")} — Qty: {p.get("QUANTITY")} | Price: {p.get("PRICE")} | PRODUCT_ID: {p.get("PRODUCT_ID")} | KEY: {str(p.get("PRODUCT_ID") or p.get("PRODUCT_NAME"))}")
+def get_companies_batch(company_ids):
+    unique_ids = list(set(str(cid) for cid in company_ids if cid))
+    company_map = {}
+    chunk_size = 50
+    for i in range(0, len(unique_ids), chunk_size):
+        chunk = unique_ids[i:i+chunk_size]
+        params = {"select[]": ["ID", "TITLE"]}
+        for j, cid in enumerate(chunk):
+            params[f"filter[ID][{j}]"] = cid
+        data = bx_get("crm.company.list.json", params)
+        for c in data.get("result", []):
+            company_map[str(c["ID"])] = c.get("TITLE", "-")
+    return company_map
 
 
-def fetch_data():
+# ==================== PAGE 1: DEALS BELUM INVOICE ====================
+def fetch_deals_belum_invoice():
     progress = st.progress(0)
     status = st.empty()
 
@@ -152,7 +127,73 @@ def fetch_data():
         {
             "filter[STAGE_SEMANTIC_ID]": "S",
             "select[]": ["ID", "TITLE", "STAGE_ID", "OPPORTUNITY",
-                         "ASSIGNED_BY_ID", "DATE_CLOSED", "CURRENCY_ID"]
+                         "ASSIGNED_BY_ID", "COMPANY_ID"]
+        }
+    )
+    progress.progress(20)
+    status.text(f"✅ {len(all_deals)} deals WON ditemukan")
+
+    # STEP 2 - Semua invoice (cuma UF_DEAL_ID)
+    status.text("📄 Mengambil data invoice...")
+    all_invoices_raw = bitrix_get_all(
+        "crm.invoice.list.json",
+        {"select": ["UF_DEAL_ID"]}
+    )
+    invoice_deal_ids = set()
+    for inv in all_invoices_raw:
+        deal_id = str(inv.get("UF_DEAL_ID", ""))
+        if deal_id and deal_id != "0":
+            invoice_deal_ids.add(deal_id)
+    progress.progress(50)
+
+    # STEP 3 - Filter belum invoice
+    deals_filtered = [d for d in all_deals if str(d["ID"]) not in invoice_deal_ids]
+    status.text(f"📊 {len(deals_filtered)} deals belum ada invoice")
+
+    # STEP 4 - Batch user & company
+    status.text("👤 Mengambil info user & company...")
+    all_user_ids    = [d.get("ASSIGNED_BY_ID") for d in deals_filtered]
+    all_company_ids = [d.get("COMPANY_ID") for d in deals_filtered]
+    user_map    = get_users_batch(all_user_ids)
+    company_map = get_companies_batch(all_company_ids)
+    progress.progress(80)
+
+    # STEP 5 - Build rows
+    rows = []
+    for deal in deals_filtered:
+        user_id    = str(deal.get("ASSIGNED_BY_ID", ""))
+        company_id = str(deal.get("COMPANY_ID", ""))
+        rows.append({
+            "Deal ID":      deal.get("ID"),
+            "Deal Name":    deal.get("TITLE", ""),
+            "Stage":        deal.get("STAGE_ID", ""),
+            "Amount":       float(deal.get("OPPORTUNITY", 0) or 0),
+            "Responsible":  user_map.get(user_id, user_id),
+            "Company ID":   company_id or "-",
+            "Company Name": company_map.get(company_id, "-"),
+        })
+
+    progress.progress(100)
+    status.text(f"✅ Selesai! {len(rows)} deals belum invoice.")
+    time.sleep(0.5)
+    status.empty()
+    progress.empty()
+
+    return pd.DataFrame(rows)
+
+
+# ==================== PAGE 2: OUTSTANDING QTY ====================
+def fetch_outstanding_qty():
+    progress = st.progress(0)
+    status = st.empty()
+
+    # STEP 1 - Deals WON
+    status.text("📋 Mengambil deals WON...")
+    all_deals = bitrix_get_all(
+        "crm.deal.list.json",
+        {
+            "filter[STAGE_SEMANTIC_ID]": "S",
+            "select[]": ["ID", "TITLE", "STAGE_ID", "OPPORTUNITY", "ASSIGNED_BY_ID"]
         }
     )
     progress.progress(15)
@@ -240,8 +281,6 @@ def fetch_data():
     for deal in deals_to_process:
         deal_id     = str(deal["ID"])
         user_id     = str(deal.get("ASSIGNED_BY_ID", ""))
-        date_closed = deal.get("DATE_CLOSED") or ""
-        date_won    = date_closed[:10] if date_closed else ""
         responsible = user_map.get(user_id, user_id)
 
         inv_list = invoice_map.get(deal_id, [])
@@ -250,10 +289,11 @@ def fetch_data():
             for inv in inv_list
         ) if inv_list else "-"
 
+        # Hitung invoiced qty — match by PRODUCT_NAME karena PRODUCT_ID bisa beda
         invoiced_qty = defaultdict(float)
         for inv in inv_list:
             for p in inv_product_map.get(str(inv["id"]), []):
-                pid = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
+                pid = p.get("PRODUCT_NAME", "UNKNOWN")
                 invoiced_qty[pid] += float(p.get("QUANTITY", 0))
 
         deal_products = deal_product_map.get(deal_id, [])
@@ -261,7 +301,7 @@ def fetch_data():
             continue
 
         for p in deal_products:
-            pid               = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
+            pid               = p.get("PRODUCT_NAME", "UNKNOWN")
             qty_ordered       = float(p.get("QUANTITY", 0))
             qty_invoiced      = invoiced_qty.get(pid, 0)
             outstanding       = qty_ordered - qty_invoiced
@@ -278,7 +318,6 @@ def fetch_data():
                 "Stage":             deal.get("STAGE_ID", ""),
                 "Amount":            float(deal.get("OPPORTUNITY", 0) or 0),
                 "Responsible":       responsible,
-                "Deal Date (WON)":   date_won,
                 "Product Name":      p.get("PRODUCT_NAME", ""),
                 "Unit":              p.get("MEASURE_NAME", ""),
                 "Unit Price":        unit_price,
@@ -298,50 +337,24 @@ def fetch_data():
     return pd.DataFrame(rows)
 
 
-def build_excel(df):
+# ==================== EXCEL ====================
+def build_excel_belum_invoice(df):
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Outstanding Report")
+        df.to_excel(writer, index=False, sheet_name="Deals Belum Invoice")
+        _style_sheet(writer.sheets["Deals Belum Invoice"],
+                     currency_cols=["Amount"])
+    buffer.seek(0)
+    return buffer.read()
 
-        from openpyxl.styles import Font, PatternFill, Alignment
-        from openpyxl.utils import get_column_letter
 
-        ws = writer.sheets["Outstanding Report"]
-
-        header_fill = PatternFill("solid", start_color="1F4E79", end_color="1F4E79")
-        header_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-        data_font = Font(name="Arial", size=10)
-        for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
-            fill_color = "FFFFFF" if row_idx % 2 == 0 else "EBF3FB"
-            fill = PatternFill("solid", start_color=fill_color, end_color=fill_color)
-            for cell in row:
-                cell.font = data_font
-                cell.fill = fill
-                cell.alignment = Alignment(vertical="center")
-
-        col_map = {cell.value: cell.column for cell in ws[1]}
-        for col_name in ["Unit Price", "Outstanding Value", "Amount"]:
-            if col_name in col_map:
-                col_letter = get_column_letter(col_map[col_name])
-                for cell in ws[f"{col_letter}2":f"{col_letter}{ws.max_row}"]:
-                    for c in cell:
-                        c.number_format = "#,##0.00"
-        for col_name in ["Qty Ordered", "Qty Invoiced", "Outstanding Qty"]:
-            if col_name in col_map:
-                col_letter = get_column_letter(col_map[col_name])
-                for cell in ws[f"{col_letter}2":f"{col_letter}{ws.max_row}"]:
-                    for c in cell:
-                        c.number_format = "#,##0"
-
-        for col in ws.columns:
-            max_len = max((len(str(c.value)) if c.value else 0) for c in col)
-            ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 4, 40)
-        ws.freeze_panes = "A2"
+def build_excel_outstanding(df):
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Outstanding Qty")
+        _style_sheet(writer.sheets["Outstanding Qty"],
+                     currency_cols=["Unit Price", "Outstanding Value", "Amount"],
+                     number_cols=["Qty Ordered", "Qty Invoiced", "Outstanding Qty"])
 
         if not df.empty:
             summary = {
@@ -355,29 +368,62 @@ def build_excel(df):
     return buffer.read()
 
 
-def send_email(to_email, excel_data, df):
+def _style_sheet(ws, currency_cols=[], number_cols=[]):
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    header_fill = PatternFill("solid", start_color="1F4E79", end_color="1F4E79")
+    header_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    data_font = Font(name="Arial", size=10)
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+        fill_color = "FFFFFF" if row_idx % 2 == 0 else "EBF3FB"
+        fill = PatternFill("solid", start_color=fill_color, end_color=fill_color)
+        for cell in row:
+            cell.font = data_font
+            cell.fill = fill
+            cell.alignment = Alignment(vertical="center")
+
+    col_map = {cell.value: cell.column for cell in ws[1]}
+    for col_name in currency_cols:
+        if col_name in col_map:
+            col_letter = get_column_letter(col_map[col_name])
+            for cell in ws[f"{col_letter}2":f"{col_letter}{ws.max_row}"]:
+                for c in cell:
+                    c.number_format = "#,##0.00"
+    for col_name in number_cols:
+        if col_name in col_map:
+            col_letter = get_column_letter(col_map[col_name])
+            for cell in ws[f"{col_letter}2":f"{col_letter}{ws.max_row}"]:
+                for c in cell:
+                    c.number_format = "#,##0"
+
+    for col in ws.columns:
+        max_len = max((len(str(c.value)) if c.value else 0) for c in col)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 4, 40)
+    ws.freeze_panes = "A2"
+
+
+# ==================== EMAIL ====================
+def send_email(to_email, excel_data, subject, summary_html):
     msg = MIMEMultipart("mixed")
-    msg["Subject"] = "Laporan Outstanding Deals - Bitrix24"
+    msg["Subject"] = subject
     msg["From"]    = EMAIL_FROM
     msg["To"]      = to_email
     if CC_EMAILS:
         msg["Cc"] = ", ".join(CC_EMAILS)
 
-    total_deals = df["Deal ID"].nunique() if not df.empty else 0
-    total_value = df["Outstanding Value"].sum() if not df.empty else 0
-
     body = MIMEMultipart("alternative")
     html = f"""
     <html><body>
     <p>Halo,</p>
-    <p>Berikut kami lampirkan laporan outstanding deals dari Bitrix24.</p>
-    <ul>
-        <li>Total Deals dengan Outstanding: <b>{total_deals} deals</b></li>
-        <li>Total Outstanding Value: <b>{total_value:,.2f}</b></li>
-    </ul>
+    {summary_html}
     <p>Detail lengkap dapat dilihat pada file terlampir.</p>
-    <br>
-    <p>Terima kasih.</p>
+    <br><p>Terima kasih.</p>
     </body></html>
     """
     body.attach(MIMEText(html, "html"))
@@ -386,7 +432,7 @@ def send_email(to_email, excel_data, df):
     part = MIMEBase("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     part.set_payload(excel_data)
     encoders.encode_base64(part)
-    part.add_header("Content-Disposition", 'attachment; filename="outstanding_report.xlsx"')
+    part.add_header("Content-Disposition", f'attachment; filename="{subject}.xlsx"')
     msg.attach(part)
 
     recipients = [to_email] + CC_EMAILS
@@ -420,68 +466,125 @@ if not st.session_state.get("logged_in"):
     st.stop()
 
 # ==================== STREAMLIT UI ====================
-st.set_page_config(page_title="Bitrix24 Outstanding Report", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Bitrix24 CRM Report", page_icon="📊", layout="wide")
 
-col_title, col_logout = st.columns([4, 1])
-with col_title:
-    st.title("📊 Bitrix24 - Outstanding Deals Report")
-    st.caption("Deals WON dengan qty yang belum sepenuhnya diinvoice")
-with col_logout:
-    st.write("")
-    st.write("")
+# Sidebar navigasi
+with st.sidebar:
+    st.title("📊 Bitrix24 Report")
+    st.write(f"👤 {st.session_state.get('user_email', '')}")
+    st.divider()
+    page = st.radio("Pilih Halaman", [
+        "📋 Deals Belum Invoice",
+        "📦 Outstanding Qty"
+    ])
+    st.divider()
     if st.button("Logout"):
         st.session_state.clear()
         st.rerun()
 
-# Debug single deal
-with st.expander("🔍 Debug Single Deal"):
-    debug_id = st.text_input("Deal ID", value="73015")
-    if st.button("Cek Deal"):
-        debug_single_deal(debug_id)
+# ==================== PAGE 1 ====================
+if page == "📋 Deals Belum Invoice":
+    st.title("📋 Deals Belum Invoice")
+    st.caption("Deals WON yang belum dibuatkan invoice sama sekali")
 
-if st.button("🔄 Ambil Data", type="primary"):
-    df = fetch_data()
-    st.session_state["df"]         = df
-    st.session_state["excel_data"] = build_excel(df)
-    st.rerun()
+    if st.button("🔄 Ambil Data", type="primary"):
+        df = fetch_deals_belum_invoice()
+        st.session_state["df_belum_invoice"]    = df
+        st.session_state["excel_belum_invoice"] = build_excel_belum_invoice(df)
+        st.rerun()
 
-if "df" in st.session_state:
-    df         = st.session_state["df"]
-    excel_data = st.session_state["excel_data"]
+    if "df_belum_invoice" in st.session_state:
+        df         = st.session_state["df_belum_invoice"]
+        excel_data = st.session_state["excel_belum_invoice"]
 
-    if df.empty:
-        st.info("Tidak ada data outstanding ditemukan.")
-    else:
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Deals", df["Deal ID"].nunique())
-        col2.metric("Total Outstanding Qty", f"{df['Outstanding Qty'].sum():,.0f}")
-        col3.metric("Total Outstanding Value", f"{df['Outstanding Value'].sum():,.2f}")
+        if df.empty:
+            st.info("Tidak ada deals yang belum invoice.")
+        else:
+            col1, col2 = st.columns(2)
+            col1.metric("Total Deals", len(df))
+            col2.metric("Total Amount", f"{df['Amount'].sum():,.2f}")
 
-        st.divider()
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        st.divider()
+            st.divider()
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.divider()
 
-        col_dl, col_email = st.columns([1, 2])
+            col_dl, col_email = st.columns([1, 2])
+            with col_dl:
+                st.download_button(
+                    label="⬇️ Download Excel",
+                    data=excel_data,
+                    file_name="deals_belum_invoice.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col_email:
+                with st.form("form_email_belum_invoice"):
+                    to_email  = st.text_input("📧 Kirim ke (TO)", placeholder="email@domain.com")
+                    submitted = st.form_submit_button("📤 Kirim Email", type="primary")
+                    if submitted:
+                        if not to_email:
+                            st.error("Email tujuan tidak boleh kosong!")
+                        else:
+                            try:
+                                with st.spinner("Mengirim email..."):
+                                    send_email(
+                                        to_email, excel_data,
+                                        "Deals Belum Invoice - Bitrix24",
+                                        f"<p>Terdapat <b>{len(df)} deals</b> WON yang belum dibuatkan invoice.</p>"
+                                    )
+                                st.success(f"✅ Email berhasil dikirim ke {to_email}")
+                            except Exception as e:
+                                st.error(f"❌ Gagal kirim email: {e}")
 
-        with col_dl:
-            st.download_button(
-                label="⬇️ Download Excel",
-                data=excel_data,
-                file_name="outstanding_report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+# ==================== PAGE 2 ====================
+elif page == "📦 Outstanding Qty":
+    st.title("📦 Outstanding Qty")
+    st.caption("Deals WON dengan qty yang belum sepenuhnya diinvoice")
 
-        with col_email:
-            with st.form("form_email"):
-                to_email  = st.text_input("📧 Kirim ke (TO)", placeholder="email@domain.com")
-                submitted = st.form_submit_button("📤 Kirim Email", type="primary")
-                if submitted:
-                    if not to_email:
-                        st.error("Email tujuan tidak boleh kosong!")
-                    else:
-                        try:
-                            with st.spinner("Mengirim email..."):
-                                send_email(to_email, excel_data, df)
-                            st.success(f"✅ Email berhasil dikirim ke {to_email}")
-                        except Exception as e:
-                            st.error(f"❌ Gagal kirim email: {e}")
+    if st.button("🔄 Ambil Data", type="primary"):
+        df = fetch_outstanding_qty()
+        st.session_state["df_outstanding"]    = df
+        st.session_state["excel_outstanding"] = build_excel_outstanding(df)
+        st.rerun()
+
+    if "df_outstanding" in st.session_state:
+        df         = st.session_state["df_outstanding"]
+        excel_data = st.session_state["excel_outstanding"]
+
+        if df.empty:
+            st.info("Tidak ada data outstanding ditemukan.")
+        else:
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Deals", df["Deal ID"].nunique())
+            col2.metric("Total Outstanding Qty", f"{df['Outstanding Qty'].sum():,.0f}")
+            col3.metric("Total Outstanding Value", f"{df['Outstanding Value'].sum():,.2f}")
+
+            st.divider()
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.divider()
+
+            col_dl, col_email = st.columns([1, 2])
+            with col_dl:
+                st.download_button(
+                    label="⬇️ Download Excel",
+                    data=excel_data,
+                    file_name="outstanding_qty.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col_email:
+                with st.form("form_email_outstanding"):
+                    to_email  = st.text_input("📧 Kirim ke (TO)", placeholder="email@domain.com")
+                    submitted = st.form_submit_button("📤 Kirim Email", type="primary")
+                    if submitted:
+                        if not to_email:
+                            st.error("Email tujuan tidak boleh kosong!")
+                        else:
+                            try:
+                                with st.spinner("Mengirim email..."):
+                                    send_email(
+                                        to_email, excel_data,
+                                        "Outstanding Qty - Bitrix24",
+                                        f"<p>Terdapat <b>{df['Deal ID'].nunique()} deals</b> dengan outstanding qty.</p><p>Total Outstanding Value: <b>{df['Outstanding Value'].sum():,.2f}</b></p>"
+                                    )
+                                st.success(f"✅ Email berhasil dikirim ke {to_email}")
+                            except Exception as e:
+                                st.error(f"❌ Gagal kirim email: {e}")
