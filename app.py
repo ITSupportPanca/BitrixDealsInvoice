@@ -114,7 +114,7 @@ def fetch_data():
     )
     progress.progress(15)
     status.text(f"✅ {len(all_deals)} deals WON ditemukan")
-
+    st.write("Sample DATE_CLOSED:", [(d["ID"], d.get("DATE_CLOSED")) for d in all_deals[:3]]) st.stop()
     # STEP 2 - Semua invoice
     status.text("📄 Mengambil data invoice...")
     all_invoices_raw = bitrix_get_all(
