@@ -1,8 +1,5 @@
 """
 Bitrix24 - Deals Outstanding Report
-1 tabel: Deal ID, Deal Name, Stage, Amount, Responsible, Deal Date (WON),
-         Product Name, Unit, Unit Price, Qty Ordered, Qty Invoiced,
-         Outstanding Qty, Outstanding Value, Invoices (no + date)
 """
 
 import streamlit as st
@@ -103,7 +100,7 @@ def get_users_batch(user_ids):
 
 def fetch_data():
     progress = st.progress(0)
-    status   = st.empty()
+    status = st.empty()
 
     # STEP 1 - Deals WON
     status.text("📋 Mengambil deals WON...")
@@ -117,21 +114,18 @@ def fetch_data():
     )
     progress.progress(15)
     status.text(f"✅ {len(all_deals)} deals WON ditemukan")
-# Cek sample DATE_CLOSED
-sample = [(d["ID"], d.get("DATE_CLOSED")) for d in all_deals[:5]]
-st.write("Sample DATE_CLOSED:", sample)
-st.stop()
-    # STEP 2 - Semua invoice sekaligus
+
+    # STEP 2 - Semua invoice
     status.text("📄 Mengambil data invoice...")
     all_invoices_raw = bitrix_get_all(
         "crm.invoice.list.json",
-        {"select": ["ID", "UF_DEAL_ID", "ACCOUNT_NUMBER", "DATE_BILL", "STATUS_ID"]}
+        {"select": ["ID", "UF_DEAL_ID", "ACCOUNT_NUMBER", "DATE_BILL", "STATUS_ID", "PRICE"]}
     )
-    progress.progress(30)
+    progress.progress(35)
 
-    # Build invoice map per deal_id
+    # Build invoice map + hitung total amount per deal
     invoice_map = defaultdict(list)
-    all_invoice_ids = []
+    invoice_amount_map = defaultdict(float)
     for inv in all_invoices_raw:
         deal_id = str(inv.get("UF_DEAL_ID", ""))
         if deal_id and deal_id != "0" and inv.get("STATUS_ID") != "D":
@@ -140,16 +134,31 @@ st.stop()
                 "number": inv.get("ACCOUNT_NUMBER", inv.get("ID", "")),
                 "date":   inv.get("DATE_BILL", "")[:10] if inv.get("DATE_BILL") else ""
             })
-            all_invoice_ids.append(inv.get("ID"))
+            invoice_amount_map[deal_id] += float(inv.get("PRICE", 0) or 0)
 
-    # STEP 3 - Fetch SEMUA invoice product rows sekaligus (bukan per invoice)
-    status.text("📦 Mengambil product rows semua invoice...")
-    inv_product_map = defaultdict(list)  # invoice_id -> list of products
+    # STEP 3 - Filter deals yang perlu diproses (belum full invoice)
+    deals_to_process = []
+    for d in all_deals:
+        deal_id     = str(d["ID"])
+        deal_amount = float(d.get("OPPORTUNITY", 0) or 0)
+        inv_amount  = invoice_amount_map.get(deal_id, 0)
+        if inv_amount < deal_amount:
+            deals_to_process.append(d)
+
+    status.text(f"📊 {len(deals_to_process)} deals perlu diproses (dari {len(all_deals)} deals WON)")
+    progress.progress(45)
+
+    # STEP 4 - Fetch invoice product rows (batch)
+    status.text("📦 Mengambil product rows invoice...")
+    all_invoice_ids = list(set(
+        str(inv["id"])
+        for invs in invoice_map.values()
+        for inv in invs
+    ))
+    inv_product_map = defaultdict(list)
     chunk_size = 50
-    unique_inv_ids = list(set(str(i) for i in all_invoice_ids if i))
-
-    for i in range(0, len(unique_inv_ids), chunk_size):
-        chunk = unique_inv_ids[i:i+chunk_size]
+    for i in range(0, len(all_invoice_ids), chunk_size):
+        chunk = all_invoice_ids[i:i+chunk_size]
         params = {
             "filter[OWNER_TYPE]": "I",
             "select[]": ["OWNER_ID", "PRODUCT_ID", "PRODUCT_NAME", "QUANTITY"],
@@ -160,43 +169,38 @@ st.stop()
         for p in (data.get("result", []) or []):
             owner_id = str(p.get("OWNER_ID", ""))
             inv_product_map[owner_id].append(p)
-        pct = 30 + int((i + chunk_size) / len(unique_inv_ids) * 20) if unique_inv_ids else 50
-        progress.progress(min(pct, 50))
-
-    progress.progress(50)
-    st.info(f"""
-
-    # STEP 4 - Fetch SEMUA deal product rows sekaligus
-    status.text("📦 Mengambil product rows semua deals...")
-    deal_product_map = defaultdict(list)  # deal_id -> list of products
-    all_deal_ids = [str(d["ID"]) for d in all_deals]
-
-    for i in range(0, len(all_deal_ids), chunk_size):
-        chunk = all_deal_ids[i:i+chunk_size]
-        for deal_id in chunk:
-            data = bx_post("crm.deal.productrows.get", {"id": deal_id})
-            products = data.get("result", [])
-            if isinstance(products, list):
-                deal_product_map[deal_id] = products
-        pct = 50 + int((i + chunk_size) / len(all_deal_ids) * 25) if all_deal_ids else 75
-        progress.progress(min(pct, 75))
-        status.text(f"📦 Mengambil product rows deals... {min(i+chunk_size, len(all_deal_ids))}/{len(all_deal_ids)}")
-
-    progress.progress(75)
+    progress.progress(60)
 
     # STEP 5 - Batch user
     status.text("👤 Mengambil info user...")
-    all_user_ids = [d.get("ASSIGNED_BY_ID") for d in all_deals]
+    all_user_ids = [d.get("ASSIGNED_BY_ID") for d in deals_to_process]
     user_map = get_users_batch(all_user_ids)
-    progress.progress(85)
+    progress.progress(65)
 
-    # STEP 6 - Build rows
+    # STEP 6 - Loop hanya deals yang perlu diproses
+    status.text(f"📦 Mengambil product rows deals... (0/{len(deals_to_process)})")
+    deal_product_map = defaultdict(list)
+    for i, deal in enumerate(deals_to_process):
+        deal_id = str(deal["ID"])
+        data = bx_post("crm.deal.productrows.get", {"id": deal["ID"]})
+        products = data.get("result", [])
+        if isinstance(products, list):
+            deal_product_map[deal_id] = products
+        if (i + 1) % 10 == 0 or (i + 1) == len(deals_to_process):
+            status.text(f"📦 Mengambil product rows deals... ({i+1}/{len(deals_to_process)})")
+            pct = 65 + int((i + 1) / len(deals_to_process) * 25)
+            progress.progress(min(pct, 90))
+
+    progress.progress(90)
+
+    # STEP 7 - Build rows
     status.text("🔨 Membangun data...")
     rows = []
-    for deal in all_deals:
-        deal_id    = str(deal["ID"])
-        user_id    = str(deal.get("ASSIGNED_BY_ID", ""))
-        date_won   = deal.get("DATE_CLOSED", "")[:10] if deal.get("DATE_CLOSED") else ""
+    for deal in deals_to_process:
+        deal_id     = str(deal["ID"])
+        user_id     = str(deal.get("ASSIGNED_BY_ID", ""))
+        date_closed = deal.get("DATE_CLOSED", "")
+        date_won    = date_closed[:10] if date_closed else ""
         responsible = user_map.get(user_id, user_id)
 
         inv_list = invoice_map.get(deal_id, [])
@@ -205,7 +209,6 @@ st.stop()
             for inv in inv_list
         ) if inv_list else "-"
 
-        # Hitung invoiced qty dari cache
         invoiced_qty = defaultdict(float)
         for inv in inv_list:
             for p in inv_product_map.get(str(inv["id"]), []):
@@ -217,10 +220,10 @@ st.stop()
             continue
 
         for p in deal_products:
-            pid           = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
-            qty_ordered   = float(p.get("QUANTITY", 0))
-            qty_invoiced  = invoiced_qty.get(pid, 0)
-            outstanding   = qty_ordered - qty_invoiced
+            pid              = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
+            qty_ordered      = float(p.get("QUANTITY", 0))
+            qty_invoiced     = invoiced_qty.get(pid, 0)
+            outstanding      = qty_ordered - qty_invoiced
 
             if outstanding <= 0:
                 continue
