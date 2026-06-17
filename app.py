@@ -98,7 +98,50 @@ def get_users_batch(user_ids):
     return user_map
 
 
-def fetch_data(debug_mode=False):
+def debug_single_deal(deal_id):
+    st.write(f"### 🔍 Debug Deal ID: {deal_id}")
+
+    # Cek deal
+    deal_data = bx_post("crm.deal.get", {"id": deal_id})
+    deal = deal_data.get("result", {})
+    st.write("**Deal info:**", {
+        "ID": deal.get("ID"),
+        "Title": deal.get("TITLE"),
+        "Stage": deal.get("STAGE_ID"),
+        "Amount": deal.get("OPPORTUNITY"),
+    })
+
+    # Cek invoice
+    st.write("**Mencari invoice untuk deal ini...**")
+    inv_data = bx_post("crm.invoice.list", {
+        "filter": {"UF_DEAL_ID": deal_id},
+        "select": ["ID", "ACCOUNT_NUMBER", "STATUS_ID", "DATE_BILL", "PRICE"]
+    })
+    invoices = inv_data.get("result", [])
+    st.write(f"Invoice ditemukan: {len(invoices)}")
+    for inv in invoices:
+        st.write(f"  - Invoice {inv.get('ACCOUNT_NUMBER')} (ID:{inv.get('ID')}) | Status:{inv.get('STATUS_ID')} | Amount:{inv.get('PRICE')}")
+
+        # Cek product rows invoice
+        prod_data = bx_post("crm.productrow.list", {
+            "filter": {"OWNER_TYPE": "I", "OWNER_ID": int(inv["ID"])},
+            "select": ["OWNER_ID", "PRODUCT_ID", "PRODUCT_NAME", "QUANTITY"]
+        })
+        prods = prod_data.get("result", [])
+        st.write(f"    Product rows: {len(prods)}")
+        for p in prods:
+            st.write(f"      • {p.get('PRODUCT_NAME')} — Qty: {p.get('QUANTITY')}")
+
+    # Cek deal product rows
+    st.write("**Deal product rows:**")
+    deal_prod_data = bx_post("crm.deal.productrows.get", {"id": deal_id})
+    deal_prods = deal_prod_data.get("result", [])
+    st.write(f"Deal products ditemukan: {len(deal_prods)}")
+    for p in deal_prods:
+        st.write(f"  • {p.get('PRODUCT_NAME')} — Qty: {p.get('QUANTITY')} | Price: {p.get('PRICE')}")
+
+
+def fetch_data():
     progress = st.progress(0)
     status = st.empty()
 
@@ -114,11 +157,6 @@ def fetch_data(debug_mode=False):
     )
     progress.progress(15)
     status.text(f"✅ {len(all_deals)} deals WON ditemukan")
-
-    # DEBUG - cek DATE_CLOSED
-    if debug_mode:
-        sample = [(d["ID"], d.get("DATE_CLOSED")) for d in all_deals[:5]]
-        st.write("🔍 Sample DATE_CLOSED:", sample)
 
     # STEP 2 - Semua invoice
     status.text("📄 Mengambil data invoice...")
@@ -153,7 +191,7 @@ def fetch_data(debug_mode=False):
     status.text(f"📊 {len(deals_to_process)} deals perlu diproses")
     progress.progress(45)
 
-    # STEP 4 - Invoice product rows (per invoice, bukan batch karena filter multi-ID gak support)
+    # STEP 4 - Invoice product rows per invoice
     status.text("📦 Mengambil product rows invoice...")
     inv_product_map = defaultdict(list)
     all_invoice_ids = list(set(
@@ -173,14 +211,6 @@ def fetch_data(debug_mode=False):
             progress.progress(min(pct, 60))
 
     progress.progress(60)
-
-    # DEBUG - cek deal 73015
-    if debug_mode:
-        test_id = "73015"
-        st.write(f"🔍 Invoice map untuk deal {test_id}:", invoice_map.get(test_id, "KOSONG"))
-        for inv in invoice_map.get(test_id, []):
-            st.write(f"  Products invoice {inv['number']} (ID:{inv['id']}):",
-                     inv_product_map.get(str(inv["id"]), "KOSONG"))
 
     # STEP 5 - Batch user
     status.text("👤 Mengambil info user...")
@@ -403,11 +433,14 @@ with col_logout:
         st.session_state.clear()
         st.rerun()
 
-# Debug mode toggle
-debug_mode = st.checkbox("🔍 Debug Mode", value=False)
+# Debug single deal
+with st.expander("🔍 Debug Single Deal"):
+    debug_id = st.text_input("Deal ID", value="73015")
+    if st.button("Cek Deal"):
+        debug_single_deal(debug_id)
 
 if st.button("🔄 Ambil Data", type="primary"):
-    df = fetch_data(debug_mode=debug_mode)
+    df = fetch_data()
     st.session_state["df"]         = df
     st.session_state["excel_data"] = build_excel(df)
     st.rerun()
