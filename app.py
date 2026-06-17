@@ -98,7 +98,7 @@ def get_users_batch(user_ids):
     return user_map
 
 
-def fetch_data():
+def fetch_data(debug_mode=False):
     progress = st.progress(0)
     status = st.empty()
 
@@ -114,8 +114,12 @@ def fetch_data():
     )
     progress.progress(15)
     status.text(f"✅ {len(all_deals)} deals WON ditemukan")
-    st.write("Sample DATE_CLOSED:", [(d["ID"], d.get("DATE_CLOSED")) for d in all_deals[:3]]) 
-    st.stop()
+
+    # DEBUG - cek DATE_CLOSED
+    if debug_mode:
+        sample = [(d["ID"], d.get("DATE_CLOSED")) for d in all_deals[:5]]
+        st.write("🔍 Sample DATE_CLOSED:", sample)
+
     # STEP 2 - Semua invoice
     status.text("📄 Mengambil data invoice...")
     all_invoices_raw = bitrix_get_all(
@@ -124,7 +128,7 @@ def fetch_data():
     )
     progress.progress(35)
 
-    # Build invoice map + hitung total amount per deal
+    # Build invoice map
     invoice_map = defaultdict(list)
     invoice_amount_map = defaultdict(float)
     for inv in all_invoices_raw:
@@ -137,7 +141,7 @@ def fetch_data():
             })
             invoice_amount_map[deal_id] += float(inv.get("PRICE", 0) or 0)
 
-    # STEP 3 - Filter deals yang perlu diproses (belum full invoice)
+    # STEP 3 - Filter deals belum full invoice
     deals_to_process = []
     for d in all_deals:
         deal_id     = str(d["ID"])
@@ -146,53 +150,45 @@ def fetch_data():
         if inv_amount < deal_amount:
             deals_to_process.append(d)
 
-    status.text(f"📊 {len(deals_to_process)} deals perlu diproses (dari {len(all_deals)} deals WON)")
+    status.text(f"📊 {len(deals_to_process)} deals perlu diproses")
     progress.progress(45)
 
-    # STEP 4 - Fetch invoice product rows (batch)
+    # STEP 4 - Invoice product rows (per invoice, bukan batch karena filter multi-ID gak support)
     status.text("📦 Mengambil product rows invoice...")
+    inv_product_map = defaultdict(list)
     all_invoice_ids = list(set(
         str(inv["id"])
         for invs in invoice_map.values()
         for inv in invs
     ))
-    inv_product_map = defaultdict(list)
-    chunk_size = 50
-    for i in range(0, len(all_invoice_ids), chunk_size):
-        chunk = all_invoice_ids[i:i+chunk_size]
-        params = {
-            "filter[OWNER_TYPE]": "I",
-            "select[]": ["OWNER_ID", "PRODUCT_ID", "PRODUCT_NAME", "QUANTITY"],
-        }
-        for j, inv_id in enumerate(chunk):
-            params[f"filter[OWNER_ID][{j}]"] = inv_id
-        data = bx_post("crm.productrow.list", params)
+    for i, inv_id in enumerate(all_invoice_ids):
+        data = bx_post("crm.productrow.list", {
+            "filter": {"OWNER_TYPE": "I", "OWNER_ID": int(inv_id)},
+            "select": ["OWNER_ID", "PRODUCT_ID", "PRODUCT_NAME", "QUANTITY"]
+        })
         for p in (data.get("result", []) or []):
-            owner_id = str(p.get("OWNER_ID", ""))
-            inv_product_map[owner_id].append(p)
+            inv_product_map[str(inv_id)].append(p)
+        if (i + 1) % 50 == 0:
+            pct = 45 + int((i + 1) / len(all_invoice_ids) * 15)
+            progress.progress(min(pct, 60))
+
     progress.progress(60)
-    # Cek deal 73015
-    test_deal_id = "73015"
-    test_inv_list = invoice_map.get(test_deal_id, [])
-    st.write("Invoice list untuk deal 73015:", test_inv_list)
 
-    # Cek product rows invoice-nya
-    for inv in test_inv_list:
-    st.write(f"Products untuk invoice {inv['number']} (ID: {inv['id']}):", 
-             inv_product_map.get(str(inv["id"]), "KOSONG"))
+    # DEBUG - cek deal 73015
+    if debug_mode:
+        test_id = "73015"
+        st.write(f"🔍 Invoice map untuk deal {test_id}:", invoice_map.get(test_id, "KOSONG"))
+        for inv in invoice_map.get(test_id, []):
+            st.write(f"  Products invoice {inv['number']} (ID:{inv['id']}):",
+                     inv_product_map.get(str(inv["id"]), "KOSONG"))
 
-st.stop()
-
-
-
-    
     # STEP 5 - Batch user
     status.text("👤 Mengambil info user...")
     all_user_ids = [d.get("ASSIGNED_BY_ID") for d in deals_to_process]
     user_map = get_users_batch(all_user_ids)
     progress.progress(65)
 
-    # STEP 6 - Loop hanya deals yang perlu diproses
+    # STEP 6 - Deal product rows
     status.text(f"📦 Mengambil product rows deals... (0/{len(deals_to_process)})")
     deal_product_map = defaultdict(list)
     for i, deal in enumerate(deals_to_process):
@@ -214,7 +210,7 @@ st.stop()
     for deal in deals_to_process:
         deal_id     = str(deal["ID"])
         user_id     = str(deal.get("ASSIGNED_BY_ID", ""))
-        date_closed = deal.get("DATE_CLOSED", "")
+        date_closed = deal.get("DATE_CLOSED") or ""
         date_won    = date_closed[:10] if date_closed else ""
         responsible = user_map.get(user_id, user_id)
 
@@ -235,10 +231,10 @@ st.stop()
             continue
 
         for p in deal_products:
-            pid              = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
-            qty_ordered      = float(p.get("QUANTITY", 0))
-            qty_invoiced     = invoiced_qty.get(pid, 0)
-            outstanding      = qty_ordered - qty_invoiced
+            pid               = p.get("PRODUCT_ID") or p.get("PRODUCT_NAME", "UNKNOWN")
+            qty_ordered       = float(p.get("QUANTITY", 0))
+            qty_invoiced      = invoiced_qty.get(pid, 0)
+            outstanding       = qty_ordered - qty_invoiced
 
             if outstanding <= 0:
                 continue
@@ -250,7 +246,7 @@ st.stop()
                 "Deal ID":           deal["ID"],
                 "Deal Name":         deal.get("TITLE", ""),
                 "Stage":             deal.get("STAGE_ID", ""),
-                "Amount":            deal.get("OPPORTUNITY", 0),
+                "Amount":            float(deal.get("OPPORTUNITY", 0) or 0),
                 "Responsible":       responsible,
                 "Deal Date (WON)":   date_won,
                 "Product Name":      p.get("PRODUCT_NAME", ""),
@@ -407,8 +403,11 @@ with col_logout:
         st.session_state.clear()
         st.rerun()
 
+# Debug mode toggle
+debug_mode = st.checkbox("🔍 Debug Mode", value=False)
+
 if st.button("🔄 Ambil Data", type="primary"):
-    df = fetch_data()
+    df = fetch_data(debug_mode=debug_mode)
     st.session_state["df"]         = df
     st.session_state["excel_data"] = build_excel(df)
     st.rerun()
