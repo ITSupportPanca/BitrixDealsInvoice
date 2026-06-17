@@ -130,7 +130,7 @@ def debug_single_deal(deal_id):
         prods = prod_data.get("result", [])
         st.write(f"    Product rows: {len(prods)}")
         for p in prods:
-            st.write(f"      • {p.get('PRODUCT_NAME')} — Qty: {p.get('QUANTITY')}")
+            st.write(f"      • {p.get("PRODUCT_NAME")} — Qty: {p.get("QUANTITY")} | PRODUCT_ID: {p.get("PRODUCT_ID")} | KEY: {str(p.get("PRODUCT_ID") or p.get("PRODUCT_NAME"))}")
 
     # Cek deal product rows
     st.write("**Deal product rows:**")
@@ -138,7 +138,7 @@ def debug_single_deal(deal_id):
     deal_prods = deal_prod_data.get("result", [])
     st.write(f"Deal products ditemukan: {len(deal_prods)}")
     for p in deal_prods:
-        st.write(f"  • {p.get('PRODUCT_NAME')} — Qty: {p.get('QUANTITY')} | Price: {p.get('PRICE')}")
+        st.write(f"  • {p.get("PRODUCT_NAME")} — Qty: {p.get("QUANTITY")} | Price: {p.get("PRICE")} | PRODUCT_ID: {p.get("PRODUCT_ID")} | KEY: {str(p.get("PRODUCT_ID") or p.get("PRODUCT_NAME"))}")
 
 
 def fetch_data():
