@@ -573,9 +573,17 @@ if page == "📋 Deals Belum Invoice":
 
     col_s, col_e = st.columns(2)
     with col_s:
-        start_date = st.date_input("Start Date (End Date)", value=date.today() - timedelta(days=30))
+        start_date = st.date_input(
+            "Start Date (End Date)",
+            value=st.session_state.get("bi_start", date.today() - timedelta(days=30)),
+            key="bi_start"
+        )
     with col_e:
-        end_date = st.date_input("End Date (End Date)", value=date.today())
+        end_date = st.date_input(
+            "End Date (End Date)",
+            value=st.session_state.get("bi_end", date.today()),
+            key="bi_end"
+        )
 
     if st.button("🔄 Ambil Data", type="primary"):
         if start_date > end_date:
@@ -635,9 +643,17 @@ elif page == "📦 Outstanding Qty":
 
     col_s, col_e = st.columns(2)
     with col_s:
-        start_date = st.date_input("Start Date (End Date)", value=date.today() - timedelta(days=30))
+        start_date = st.date_input(
+            "Start Date (End Date)",
+            value=st.session_state.get("os_start", date.today() - timedelta(days=30)),
+            key="os_start"
+        )
     with col_e:
-        end_date = st.date_input("End Date (End Date)", value=date.today())
+        end_date = st.date_input(
+            "End Date (End Date)",
+            value=st.session_state.get("os_end", date.today()),
+            key="os_end"
+        )
 
     if st.button("🔄 Ambil Data", type="primary"):
         if start_date > end_date:
