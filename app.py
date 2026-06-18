@@ -17,6 +17,7 @@ from io import BytesIO
 from collections import defaultdict
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from datetime import date, timedelta
 
 # ==================== CONFIG ====================
 WEBHOOK    = st.secrets["config"]["BITRIX_WEBHOOK"]
@@ -116,18 +117,20 @@ def get_companies_batch(company_ids):
 
 
 # ==================== PAGE 1: DEALS BELUM INVOICE ====================
-def fetch_deals_belum_invoice():
+def fetch_deals_belum_invoice(start_date, end_date):
     progress = st.progress(0)
     status = st.empty()
 
-    # STEP 1 - Deals WON
+    # STEP 1 - Deals WON dengan filter CLOSEDATE
     status.text("📋 Mengambil deals WON...")
     all_deals = bitrix_get_all(
         "crm.deal.list.json",
         {
             "filter[STAGE_SEMANTIC_ID]": "S",
+            "filter[>=CLOSEDATE]": start_date.strftime("%Y-%m-%d"),
+            "filter[<=CLOSEDATE]": end_date.strftime("%Y-%m-%d"),
             "select[]": ["ID", "TITLE", "STAGE_ID", "OPPORTUNITY",
-                         "ASSIGNED_BY_ID", "COMPANY_ID"]
+                         "ASSIGNED_BY_ID", "COMPANY_ID", "CLOSEDATE"]
         }
     )
     progress.progress(20)
@@ -163,12 +166,14 @@ def fetch_deals_belum_invoice():
     for deal in deals_filtered:
         user_id    = str(deal.get("ASSIGNED_BY_ID", ""))
         company_id = str(deal.get("COMPANY_ID", ""))
+        closedate  = deal.get("CLOSEDATE", "")[:10] if deal.get("CLOSEDATE") else ""
         rows.append({
             "Deal ID":      deal.get("ID"),
             "Deal Name":    deal.get("TITLE", ""),
             "Stage":        deal.get("STAGE_ID", ""),
             "Amount":       float(deal.get("OPPORTUNITY", 0) or 0),
             "Responsible":  user_map.get(user_id, user_id),
+            "End Date":     closedate,
             "Company ID":   company_id or "-",
             "Company Name": company_map.get(company_id, "-"),
         })
@@ -183,36 +188,46 @@ def fetch_deals_belum_invoice():
 
 
 # ==================== PAGE 2: OUTSTANDING QTY ====================
-def fetch_outstanding_qty():
+def fetch_outstanding_qty(start_date, end_date):
     progress = st.progress(0)
     status = st.empty()
 
-    # STEP 1 - Deals WON
+    # STEP 1 - Deals WON dengan filter CLOSEDATE
     status.text("📋 Mengambil deals WON...")
     all_deals = bitrix_get_all(
         "crm.deal.list.json",
         {
             "filter[STAGE_SEMANTIC_ID]": "S",
-            "select[]": ["ID", "TITLE", "STAGE_ID", "OPPORTUNITY", "ASSIGNED_BY_ID"]
+            "filter[>=CLOSEDATE]": start_date.strftime("%Y-%m-%d"),
+            "filter[<=CLOSEDATE]": end_date.strftime("%Y-%m-%d"),
+            "select[]": ["ID", "TITLE", "STAGE_ID", "OPPORTUNITY",
+                         "ASSIGNED_BY_ID", "CLOSEDATE"]
         }
     )
     progress.progress(15)
     status.text(f"✅ {len(all_deals)} deals WON ditemukan")
 
-    # STEP 2 - Semua invoice
+    if not all_deals:
+        progress.empty()
+        status.empty()
+        return pd.DataFrame()
+
+    # STEP 2 - Invoice untuk deals yang ditemukan saja
     status.text("📄 Mengambil data invoice...")
+    deal_ids_set = set(str(d["ID"]) for d in all_deals)
+
     all_invoices_raw = bitrix_get_all(
         "crm.invoice.list.json",
         {"select": ["ID", "UF_DEAL_ID", "ACCOUNT_NUMBER", "DATE_BILL", "STATUS_ID", "PRICE"]}
     )
     progress.progress(35)
 
-    # Build invoice map
+    # Build invoice map - hanya untuk deals yang ada di filter
     invoice_map = defaultdict(list)
     invoice_amount_map = defaultdict(float)
     for inv in all_invoices_raw:
         deal_id = str(inv.get("UF_DEAL_ID", ""))
-        if deal_id and deal_id != "0" and inv.get("STATUS_ID") != "D":
+        if deal_id in deal_ids_set and inv.get("STATUS_ID") != "D":
             invoice_map[deal_id].append({
                 "id":     inv.get("ID"),
                 "number": inv.get("ACCOUNT_NUMBER", inv.get("ID", "")),
@@ -232,6 +247,11 @@ def fetch_outstanding_qty():
     status.text(f"📊 {len(deals_to_process)} deals perlu diproses")
     progress.progress(45)
 
+    if not deals_to_process:
+        progress.empty()
+        status.empty()
+        return pd.DataFrame()
+
     # STEP 4 - Invoice product rows per invoice
     status.text("📦 Mengambil product rows invoice...")
     inv_product_map = defaultdict(list)
@@ -240,6 +260,7 @@ def fetch_outstanding_qty():
         for invs in invoice_map.values()
         for inv in invs
     ))
+
     for i, inv_id in enumerate(all_invoice_ids):
         data = bx_post("crm.productrow.list", {
             "filter": {"OWNER_TYPE": "I", "OWNER_ID": int(inv_id)},
@@ -247,17 +268,18 @@ def fetch_outstanding_qty():
         })
         for p in (data.get("result", []) or []):
             inv_product_map[str(inv_id)].append(p)
-        if (i + 1) % 50 == 0:
-            pct = 45 + int((i + 1) / len(all_invoice_ids) * 15)
-            progress.progress(min(pct, 60))
+        if (i + 1) % 50 == 0 or (i + 1) == len(all_invoice_ids):
+            pct = 45 + int((i + 1) / len(all_invoice_ids) * 20)
+            progress.progress(min(pct, 65))
+            status.text(f"📦 Mengambil product rows invoice... ({i+1}/{len(all_invoice_ids)})")
 
-    progress.progress(60)
+    progress.progress(65)
 
     # STEP 5 - Batch user
     status.text("👤 Mengambil info user...")
     all_user_ids = [d.get("ASSIGNED_BY_ID") for d in deals_to_process]
     user_map = get_users_batch(all_user_ids)
-    progress.progress(65)
+    progress.progress(70)
 
     # STEP 6 - Deal product rows
     status.text(f"📦 Mengambil product rows deals... (0/{len(deals_to_process)})")
@@ -270,17 +292,18 @@ def fetch_outstanding_qty():
             deal_product_map[deal_id] = products
         if (i + 1) % 10 == 0 or (i + 1) == len(deals_to_process):
             status.text(f"📦 Mengambil product rows deals... ({i+1}/{len(deals_to_process)})")
-            pct = 65 + int((i + 1) / len(deals_to_process) * 25)
-            progress.progress(min(pct, 90))
+            pct = 70 + int((i + 1) / len(deals_to_process) * 25)
+            progress.progress(min(pct, 95))
 
-    progress.progress(90)
+    progress.progress(95)
 
-    # STEP 7 - Build rows
+    # STEP 7 - Build rows (match by PRODUCT_NAME)
     status.text("🔨 Membangun data...")
     rows = []
     for deal in deals_to_process:
         deal_id     = str(deal["ID"])
         user_id     = str(deal.get("ASSIGNED_BY_ID", ""))
+        closedate   = deal.get("CLOSEDATE", "")[:10] if deal.get("CLOSEDATE") else ""
         responsible = user_map.get(user_id, user_id)
 
         inv_list = invoice_map.get(deal_id, [])
@@ -289,22 +312,22 @@ def fetch_outstanding_qty():
             for inv in inv_list
         ) if inv_list else "-"
 
-        # Hitung invoiced qty — match by PRODUCT_NAME karena PRODUCT_ID bisa beda
+        # Match by PRODUCT_NAME
         invoiced_qty = defaultdict(float)
         for inv in inv_list:
             for p in inv_product_map.get(str(inv["id"]), []):
-                pid = p.get("PRODUCT_NAME", "UNKNOWN")
-                invoiced_qty[pid] += float(p.get("QUANTITY", 0))
+                key = p.get("PRODUCT_NAME", "").strip()
+                invoiced_qty[key] += float(p.get("QUANTITY", 0))
 
         deal_products = deal_product_map.get(deal_id, [])
         if not deal_products:
             continue
 
         for p in deal_products:
-            pid               = p.get("PRODUCT_NAME", "UNKNOWN")
-            qty_ordered       = float(p.get("QUANTITY", 0))
-            qty_invoiced      = invoiced_qty.get(pid, 0)
-            outstanding       = qty_ordered - qty_invoiced
+            key           = p.get("PRODUCT_NAME", "").strip()
+            qty_ordered   = float(p.get("QUANTITY", 0))
+            qty_invoiced  = invoiced_qty.get(key, 0)
+            outstanding   = qty_ordered - qty_invoiced
 
             if outstanding <= 0:
                 continue
@@ -318,6 +341,7 @@ def fetch_outstanding_qty():
                 "Stage":             deal.get("STAGE_ID", ""),
                 "Amount":            float(deal.get("OPPORTUNITY", 0) or 0),
                 "Responsible":       responsible,
+                "End Date":          closedate,
                 "Product Name":      p.get("PRODUCT_NAME", ""),
                 "Unit":              p.get("MEASURE_NAME", ""),
                 "Unit Price":        unit_price,
@@ -342,8 +366,7 @@ def build_excel_belum_invoice(df):
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Deals Belum Invoice")
-        _style_sheet(writer.sheets["Deals Belum Invoice"],
-                     currency_cols=["Amount"])
+        _style_sheet(writer.sheets["Deals Belum Invoice"], currency_cols=["Amount"])
     buffer.seek(0)
     return buffer.read()
 
@@ -352,10 +375,11 @@ def build_excel_outstanding(df):
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Outstanding Qty")
-        _style_sheet(writer.sheets["Outstanding Qty"],
-                     currency_cols=["Unit Price", "Outstanding Value", "Amount"],
-                     number_cols=["Qty Ordered", "Qty Invoiced", "Outstanding Qty"])
-
+        _style_sheet(
+            writer.sheets["Outstanding Qty"],
+            currency_cols=["Unit Price", "Outstanding Value", "Amount"],
+            number_cols=["Qty Ordered", "Qty Invoiced", "Outstanding Qty"]
+        )
         if not df.empty:
             summary = {
                 "Total Deals":             [df["Deal ID"].nunique()],
@@ -363,7 +387,6 @@ def build_excel_outstanding(df):
                 "Total Outstanding Value": [df["Outstanding Value"].sum()],
             }
             pd.DataFrame(summary).to_excel(writer, index=False, sheet_name="Summary")
-
     buffer.seek(0)
     return buffer.read()
 
@@ -468,7 +491,6 @@ if not st.session_state.get("logged_in"):
 # ==================== STREAMLIT UI ====================
 st.set_page_config(page_title="Bitrix24 CRM Report", page_icon="📊", layout="wide")
 
-# Sidebar navigasi
 with st.sidebar:
     st.title("📊 Bitrix24 Report")
     st.write(f"👤 {st.session_state.get('user_email', '')}")
@@ -487,18 +509,27 @@ if page == "📋 Deals Belum Invoice":
     st.title("📋 Deals Belum Invoice")
     st.caption("Deals WON yang belum dibuatkan invoice sama sekali")
 
+    col_s, col_e = st.columns(2)
+    with col_s:
+        start_date = st.date_input("Start Date (End Date)", value=date.today() - timedelta(days=30))
+    with col_e:
+        end_date = st.date_input("End Date (End Date)", value=date.today())
+
     if st.button("🔄 Ambil Data", type="primary"):
-        df = fetch_deals_belum_invoice()
-        st.session_state["df_belum_invoice"]    = df
-        st.session_state["excel_belum_invoice"] = build_excel_belum_invoice(df)
-        st.rerun()
+        if start_date > end_date:
+            st.error("Start Date tidak boleh lebih besar dari End Date!")
+        else:
+            df = fetch_deals_belum_invoice(start_date, end_date)
+            st.session_state["df_belum_invoice"]    = df
+            st.session_state["excel_belum_invoice"] = build_excel_belum_invoice(df)
+            st.rerun()
 
     if "df_belum_invoice" in st.session_state:
         df         = st.session_state["df_belum_invoice"]
         excel_data = st.session_state["excel_belum_invoice"]
 
         if df.empty:
-            st.info("Tidak ada deals yang belum invoice.")
+            st.info("Tidak ada deals yang belum invoice pada periode ini.")
         else:
             col1, col2 = st.columns(2)
             col1.metric("Total Deals", len(df))
@@ -529,7 +560,7 @@ if page == "📋 Deals Belum Invoice":
                                     send_email(
                                         to_email, excel_data,
                                         "Deals Belum Invoice - Bitrix24",
-                                        f"<p>Terdapat <b>{len(df)} deals</b> WON yang belum dibuatkan invoice.</p>"
+                                        f"<p>Terdapat <b>{len(df)} deals</b> WON yang belum dibuatkan invoice pada periode <b>{start_date}</b> s/d <b>{end_date}</b>.</p>"
                                     )
                                 st.success(f"✅ Email berhasil dikirim ke {to_email}")
                             except Exception as e:
@@ -540,18 +571,27 @@ elif page == "📦 Outstanding Qty":
     st.title("📦 Outstanding Qty")
     st.caption("Deals WON dengan qty yang belum sepenuhnya diinvoice")
 
+    col_s, col_e = st.columns(2)
+    with col_s:
+        start_date = st.date_input("Start Date (End Date)", value=date.today() - timedelta(days=30))
+    with col_e:
+        end_date = st.date_input("End Date (End Date)", value=date.today())
+
     if st.button("🔄 Ambil Data", type="primary"):
-        df = fetch_outstanding_qty()
-        st.session_state["df_outstanding"]    = df
-        st.session_state["excel_outstanding"] = build_excel_outstanding(df)
-        st.rerun()
+        if start_date > end_date:
+            st.error("Start Date tidak boleh lebih besar dari End Date!")
+        else:
+            df = fetch_outstanding_qty(start_date, end_date)
+            st.session_state["df_outstanding"]    = df
+            st.session_state["excel_outstanding"] = build_excel_outstanding(df)
+            st.rerun()
 
     if "df_outstanding" in st.session_state:
         df         = st.session_state["df_outstanding"]
         excel_data = st.session_state["excel_outstanding"]
 
         if df.empty:
-            st.info("Tidak ada data outstanding ditemukan.")
+            st.info("Tidak ada data outstanding pada periode ini.")
         else:
             col1, col2, col3 = st.columns(3)
             col1.metric("Total Deals", df["Deal ID"].nunique())
@@ -583,7 +623,7 @@ elif page == "📦 Outstanding Qty":
                                     send_email(
                                         to_email, excel_data,
                                         "Outstanding Qty - Bitrix24",
-                                        f"<p>Terdapat <b>{df['Deal ID'].nunique()} deals</b> dengan outstanding qty.</p><p>Total Outstanding Value: <b>{df['Outstanding Value'].sum():,.2f}</b></p>"
+                                        f"<p>Terdapat <b>{df['Deal ID'].nunique()} deals</b> dengan outstanding qty pada periode <b>{start_date}</b> s/d <b>{end_date}</b>.</p><p>Total Outstanding Value: <b>{df['Outstanding Value'].sum():,.2f}</b></p>"
                                     )
                                 st.success(f"✅ Email berhasil dikirim ke {to_email}")
                             except Exception as e:
