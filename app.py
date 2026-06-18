@@ -2,6 +2,7 @@
 Bitrix24 - CRM Report App
 Halaman 1: Deals Belum Invoice
 Halaman 2: Outstanding Qty
+Role: super_admin, PKR, PKL
 """
 
 import streamlit as st
@@ -107,17 +108,49 @@ def get_companies_batch(company_ids):
     chunk_size = 50
     for i in range(0, len(unique_ids), chunk_size):
         chunk = unique_ids[i:i+chunk_size]
-        params = {"select[]": ["ID", "TITLE"]}
+        params = {"select[]": ["ID", "TITLE", "COMPANY_TYPE"]}
         for j, cid in enumerate(chunk):
             params[f"filter[ID][{j}]"] = cid
         data = bx_get("crm.company.list.json", params)
         for c in data.get("result", []):
-            company_map[str(c["ID"])] = c.get("TITLE", "-")
+            company_map[str(c["ID"])] = {
+                "name": c.get("TITLE", "-"),
+                "type": c.get("COMPANY_TYPE", "")
+            }
     return company_map
 
 
+# ==================== ROLE HELPER ====================
+def get_user_role(email):
+    roles = st.secrets.get("roles", {})
+    return roles.get(email, "PKR")  # default PKR kalau tidak ada
+
+
+def get_allowed_company_types(role):
+    role_types = st.secrets.get("role_company_types", {})
+    allowed = role_types.get(role, [])
+    # super_admin: list kosong = semua boleh
+    if role == "super_admin":
+        return None  # None = semua company type
+    return list(allowed)
+
+
+def filter_by_company_type(deals_data, company_map, allowed_types):
+    """Filter deals berdasarkan company type. None = semua."""
+    if allowed_types is None:
+        return deals_data
+    filtered = []
+    for d in deals_data:
+        company_id = str(d.get("COMPANY_ID", ""))
+        company_info = company_map.get(company_id, {})
+        company_type = company_info.get("type", "")
+        if company_type in allowed_types:
+            filtered.append(d)
+    return filtered
+
+
 # ==================== PAGE 1: DEALS BELUM INVOICE ====================
-def fetch_deals_belum_invoice(start_date, end_date):
+def fetch_deals_belum_invoice(start_date, end_date, allowed_types):
     progress = st.progress(0)
     status = st.empty()
 
@@ -136,7 +169,17 @@ def fetch_deals_belum_invoice(start_date, end_date):
     progress.progress(20)
     status.text(f"✅ {len(all_deals)} deals WON ditemukan")
 
-    # STEP 2 - Semua invoice (cuma UF_DEAL_ID)
+    # STEP 2 - Batch company (untuk filter role)
+    status.text("🏢 Mengambil info company...")
+    all_company_ids = [d.get("COMPANY_ID") for d in all_deals]
+    company_map = get_companies_batch(all_company_ids)
+    progress.progress(35)
+
+    # STEP 3 - Filter by company type (role)
+    all_deals = filter_by_company_type(all_deals, company_map, allowed_types)
+    status.text(f"📊 {len(all_deals)} deals setelah filter role")
+
+    # STEP 4 - Semua invoice
     status.text("📄 Mengambil data invoice...")
     all_invoices_raw = bitrix_get_all(
         "crm.invoice.list.json",
@@ -147,26 +190,25 @@ def fetch_deals_belum_invoice(start_date, end_date):
         deal_id = str(inv.get("UF_DEAL_ID", ""))
         if deal_id and deal_id != "0":
             invoice_deal_ids.add(deal_id)
-    progress.progress(50)
+    progress.progress(60)
 
-    # STEP 3 - Filter belum invoice
+    # STEP 5 - Filter belum invoice
     deals_filtered = [d for d in all_deals if str(d["ID"]) not in invoice_deal_ids]
     status.text(f"📊 {len(deals_filtered)} deals belum ada invoice")
 
-    # STEP 4 - Batch user & company
-    status.text("👤 Mengambil info user & company...")
-    all_user_ids    = [d.get("ASSIGNED_BY_ID") for d in deals_filtered]
-    all_company_ids = [d.get("COMPANY_ID") for d in deals_filtered]
-    user_map    = get_users_batch(all_user_ids)
-    company_map = get_companies_batch(all_company_ids)
+    # STEP 6 - Batch user
+    status.text("👤 Mengambil info user...")
+    all_user_ids = [d.get("ASSIGNED_BY_ID") for d in deals_filtered]
+    user_map = get_users_batch(all_user_ids)
     progress.progress(80)
 
-    # STEP 5 - Build rows
+    # STEP 7 - Build rows
     rows = []
     for deal in deals_filtered:
         user_id    = str(deal.get("ASSIGNED_BY_ID", ""))
         company_id = str(deal.get("COMPANY_ID", ""))
         closedate  = deal.get("CLOSEDATE", "")[:10] if deal.get("CLOSEDATE") else ""
+        company_info = company_map.get(company_id, {"name": "-", "type": "-"})
         rows.append({
             "Deal ID":      deal.get("ID"),
             "Deal Name":    deal.get("TITLE", ""),
@@ -175,7 +217,8 @@ def fetch_deals_belum_invoice(start_date, end_date):
             "Responsible":  user_map.get(user_id, user_id),
             "End Date":     closedate,
             "Company ID":   company_id or "-",
-            "Company Name": company_map.get(company_id, "-"),
+            "Company Name": company_info.get("name", "-"),
+            "Company Type": company_info.get("type", "-"),
         })
 
     progress.progress(100)
@@ -188,7 +231,7 @@ def fetch_deals_belum_invoice(start_date, end_date):
 
 
 # ==================== PAGE 2: OUTSTANDING QTY ====================
-def fetch_outstanding_qty(start_date, end_date):
+def fetch_outstanding_qty(start_date, end_date, allowed_types):
     progress = st.progress(0)
     status = st.empty()
 
@@ -201,7 +244,7 @@ def fetch_outstanding_qty(start_date, end_date):
             "filter[>=CLOSEDATE]": start_date.strftime("%Y-%m-%d"),
             "filter[<=CLOSEDATE]": end_date.strftime("%Y-%m-%d"),
             "select[]": ["ID", "TITLE", "STAGE_ID", "OPPORTUNITY",
-                         "ASSIGNED_BY_ID", "CLOSEDATE"]
+                         "ASSIGNED_BY_ID", "COMPANY_ID", "CLOSEDATE"]
         }
     )
     progress.progress(15)
@@ -212,17 +255,31 @@ def fetch_outstanding_qty(start_date, end_date):
         status.empty()
         return pd.DataFrame()
 
-    # STEP 2 - Invoice untuk deals yang ditemukan saja
-    status.text("📄 Mengambil data invoice...")
+    # STEP 2 - Batch company (untuk filter role)
+    status.text("🏢 Mengambil info company...")
+    all_company_ids = [d.get("COMPANY_ID") for d in all_deals]
+    company_map = get_companies_batch(all_company_ids)
+    progress.progress(25)
+
+    # STEP 3 - Filter by company type (role)
+    all_deals = filter_by_company_type(all_deals, company_map, allowed_types)
+    status.text(f"📊 {len(all_deals)} deals setelah filter role")
+
+    if not all_deals:
+        progress.empty()
+        status.empty()
+        return pd.DataFrame()
+
     deal_ids_set = set(str(d["ID"]) for d in all_deals)
 
+    # STEP 4 - Invoice
+    status.text("📄 Mengambil data invoice...")
     all_invoices_raw = bitrix_get_all(
         "crm.invoice.list.json",
         {"select": ["ID", "UF_DEAL_ID", "ACCOUNT_NUMBER", "DATE_BILL", "STATUS_ID", "PRICE"]}
     )
-    progress.progress(35)
+    progress.progress(40)
 
-    # Build invoice map - hanya untuk deals yang ada di filter
     invoice_map = defaultdict(list)
     invoice_amount_map = defaultdict(float)
     for inv in all_invoices_raw:
@@ -235,7 +292,7 @@ def fetch_outstanding_qty(start_date, end_date):
             })
             invoice_amount_map[deal_id] += float(inv.get("PRICE", 0) or 0)
 
-    # STEP 3 - Filter deals belum full invoice
+    # STEP 5 - Filter deals belum full invoice
     deals_to_process = []
     for d in all_deals:
         deal_id     = str(d["ID"])
@@ -252,7 +309,7 @@ def fetch_outstanding_qty(start_date, end_date):
         status.empty()
         return pd.DataFrame()
 
-    # STEP 4 - Invoice product rows per invoice
+    # STEP 6 - Invoice product rows per invoice
     status.text("📦 Mengambil product rows invoice...")
     inv_product_map = defaultdict(list)
     all_invoice_ids = list(set(
@@ -260,7 +317,6 @@ def fetch_outstanding_qty(start_date, end_date):
         for invs in invoice_map.values()
         for inv in invs
     ))
-
     for i, inv_id in enumerate(all_invoice_ids):
         data = bx_post("crm.productrow.list", {
             "filter": {"OWNER_TYPE": "I", "OWNER_ID": int(inv_id)},
@@ -275,13 +331,13 @@ def fetch_outstanding_qty(start_date, end_date):
 
     progress.progress(65)
 
-    # STEP 5 - Batch user
+    # STEP 7 - Batch user
     status.text("👤 Mengambil info user...")
     all_user_ids = [d.get("ASSIGNED_BY_ID") for d in deals_to_process]
     user_map = get_users_batch(all_user_ids)
     progress.progress(70)
 
-    # STEP 6 - Deal product rows
+    # STEP 8 - Deal product rows
     status.text(f"📦 Mengambil product rows deals... (0/{len(deals_to_process)})")
     deal_product_map = defaultdict(list)
     for i, deal in enumerate(deals_to_process):
@@ -297,7 +353,7 @@ def fetch_outstanding_qty(start_date, end_date):
 
     progress.progress(95)
 
-    # STEP 7 - Build rows (match by PRODUCT_NAME)
+    # STEP 9 - Build rows (match by PRODUCT_NAME)
     status.text("🔨 Membangun data...")
     rows = []
     for deal in deals_to_process:
@@ -312,7 +368,6 @@ def fetch_outstanding_qty(start_date, end_date):
             for inv in inv_list
         ) if inv_list else "-"
 
-        # Match by PRODUCT_NAME
         invoiced_qty = defaultdict(float)
         for inv in inv_list:
             for p in inv_product_map.get(str(inv["id"]), []):
@@ -324,10 +379,10 @@ def fetch_outstanding_qty(start_date, end_date):
             continue
 
         for p in deal_products:
-            key           = p.get("PRODUCT_NAME", "").strip()
-            qty_ordered   = float(p.get("QUANTITY", 0))
-            qty_invoiced  = invoiced_qty.get(key, 0)
-            outstanding   = qty_ordered - qty_invoiced
+            key               = p.get("PRODUCT_NAME", "").strip()
+            qty_ordered       = float(p.get("QUANTITY", 0))
+            qty_invoiced      = invoiced_qty.get(key, 0)
+            outstanding       = qty_ordered - qty_invoiced
 
             if outstanding <= 0:
                 continue
@@ -472,14 +527,16 @@ def check_login(email, password):
 def login_page():
     st.set_page_config(page_title="Login - Bitrix24 Report", page_icon="🔐", layout="centered")
     st.title("🔐 Login")
+    st.caption("Masukkan email dan password Anda untuk melanjutkan")
     with st.form("form_login"):
-        email    = st.text_input("Email")
-        password = st.text_input("Password", type="password")
+        email    = st.text_input("Email", placeholder="Masukkan email Anda")
+        password = st.text_input("Password", type="password", placeholder="Masukkan password Anda")
         submit   = st.form_submit_button("Login", type="primary")
         if submit:
             if check_login(email, password):
-                st.session_state["logged_in"] = True
+                st.session_state["logged_in"]  = True
                 st.session_state["user_email"] = email
+                st.session_state["user_role"]  = get_user_role(email)
                 st.rerun()
             else:
                 st.error("Email atau password salah!")
@@ -491,9 +548,14 @@ if not st.session_state.get("logged_in"):
 # ==================== STREAMLIT UI ====================
 st.set_page_config(page_title="Bitrix24 CRM Report", page_icon="📊", layout="wide")
 
+user_email = st.session_state.get("user_email", "")
+user_role  = st.session_state.get("user_role", "PKR")
+allowed_types = get_allowed_company_types(user_role)
+
 with st.sidebar:
     st.title("📊 Bitrix24 Report")
-    st.write(f"👤 {st.session_state.get('user_email', '')}")
+    st.write(f"👤 {user_email}")
+    st.caption(f"Role: **{user_role}**")
     st.divider()
     page = st.radio("Pilih Halaman", [
         "📋 Deals Belum Invoice",
@@ -519,7 +581,7 @@ if page == "📋 Deals Belum Invoice":
         if start_date > end_date:
             st.error("Start Date tidak boleh lebih besar dari End Date!")
         else:
-            df = fetch_deals_belum_invoice(start_date, end_date)
+            df = fetch_deals_belum_invoice(start_date, end_date, allowed_types)
             st.session_state["df_belum_invoice"]    = df
             st.session_state["excel_belum_invoice"] = build_excel_belum_invoice(df)
             st.rerun()
@@ -581,7 +643,7 @@ elif page == "📦 Outstanding Qty":
         if start_date > end_date:
             st.error("Start Date tidak boleh lebih besar dari End Date!")
         else:
-            df = fetch_outstanding_qty(start_date, end_date)
+            df = fetch_outstanding_qty(start_date, end_date, allowed_types)
             st.session_state["df_outstanding"]    = df
             st.session_state["excel_outstanding"] = build_excel_outstanding(df)
             st.rerun()
