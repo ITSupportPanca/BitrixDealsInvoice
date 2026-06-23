@@ -3,6 +3,7 @@ Bitrix24 - CRM Report App
 Halaman 1: Deals Belum Invoice
 Halaman 2: Outstanding Qty
 Role: super_admin, PKR, PKL
+Upload ke SharePoint via Certificate Auth
 """
 
 import streamlit as st
@@ -10,6 +11,9 @@ import requests
 import pandas as pd
 import smtplib
 import time
+import base64
+import tempfile
+import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -19,6 +23,11 @@ from collections import defaultdict
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import date, timedelta
+
+# Office365
+from office365.sharepoint.client_context import ClientContext
+from office365.runtime.auth.client_credential import ClientCredential
+from office365.sharepoint.files.creation_information import FileCreationInformation
 
 # ==================== CONFIG ====================
 WEBHOOK    = st.secrets["config"]["BITRIX_WEBHOOK"]
@@ -30,6 +39,15 @@ SMTP_USER  = st.secrets["config"]["SMTP_USER"]
 SMTP_PASS  = st.secrets["config"]["SMTP_PASS"]
 EMAIL_FROM = st.secrets["config"]["EMAIL_FROM"]
 CC_EMAILS  = [st.secrets["config"]["CC_EMAIL"]]
+
+SP_TENANT_ID       = st.secrets["sharepoint"]["TENANT_ID"]
+SP_CLIENT_ID       = st.secrets["sharepoint"]["CLIENT_ID"]
+SP_CERT_PASSWORD   = st.secrets["sharepoint"]["CERT_PASSWORD"]
+SP_SITE_URL        = st.secrets["sharepoint"]["SITE_URL"]
+SP_LIBRARY         = st.secrets["sharepoint"]["LIBRARY"]
+SP_FOLDER_DEALS    = st.secrets["sharepoint"]["FOLDER_DEALS"]
+SP_FOLDER_OUTSTANDING = st.secrets["sharepoint"]["FOLDER_OUTSTANDING"]
+SP_CERT_BASE64     = st.secrets["sharepoint"]["CERT_BASE64"]
 # ================================================
 
 
@@ -123,20 +141,18 @@ def get_companies_batch(company_ids):
 # ==================== ROLE HELPER ====================
 def get_user_role(email):
     roles = st.secrets.get("roles", {})
-    return roles.get(email, "PKR")  # default PKR kalau tidak ada
+    return roles.get(email, "PKR")
 
 
 def get_allowed_company_types(role):
     role_types = st.secrets.get("role_company_types", {})
     allowed = role_types.get(role, [])
-    # super_admin: list kosong = semua boleh
     if role == "super_admin":
-        return None  # None = semua company type
+        return None
     return list(allowed)
 
 
 def filter_by_company_type(deals_data, company_map, allowed_types):
-    """Filter deals berdasarkan company type. None = semua."""
     if allowed_types is None:
         return deals_data
     filtered = []
@@ -149,12 +165,40 @@ def filter_by_company_type(deals_data, company_map, allowed_types):
     return filtered
 
 
+# ==================== SHAREPOINT ====================
+def get_sharepoint_context():
+    # Decode certificate dari base64 ke file temp
+    cert_bytes = base64.b64decode(SP_CERT_BASE64)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pfx")
+    tmp.write(cert_bytes)
+    tmp.close()
+
+    try:
+        from office365.runtime.auth.certificate_credentials import CertificateCredential
+        credentials = CertificateCredential(
+            tenant_id=SP_TENANT_ID,
+            client_id=SP_CLIENT_ID,
+            cert_path=tmp.name,
+            cert_password=SP_CERT_PASSWORD
+        )
+        ctx = ClientContext(SP_SITE_URL).with_credentials(credentials)
+        return ctx
+    finally:
+        os.unlink(tmp.name)
+
+
+def upload_to_sharepoint(excel_data, folder_name, filename):
+    ctx = get_sharepoint_context()
+    folder_url = f"{SP_LIBRARY}/{folder_name}"
+    target_folder = ctx.web.get_folder_by_server_relative_url(folder_url)
+    target_folder.upload_file(filename, excel_data).execute_query()
+
+
 # ==================== PAGE 1: DEALS BELUM INVOICE ====================
 def fetch_deals_belum_invoice(start_date, end_date, allowed_types):
     progress = st.progress(0)
     status = st.empty()
 
-    # STEP 1 - Deals WON dengan filter CLOSEDATE
     status.text("📋 Mengambil deals WON...")
     all_deals = bitrix_get_all(
         "crm.deal.list.json",
@@ -169,17 +213,14 @@ def fetch_deals_belum_invoice(start_date, end_date, allowed_types):
     progress.progress(20)
     status.text(f"✅ {len(all_deals)} deals WON ditemukan")
 
-    # STEP 2 - Batch company (untuk filter role)
     status.text("🏢 Mengambil info company...")
     all_company_ids = [d.get("COMPANY_ID") for d in all_deals]
     company_map = get_companies_batch(all_company_ids)
     progress.progress(35)
 
-    # STEP 3 - Filter by company type (role)
     all_deals = filter_by_company_type(all_deals, company_map, allowed_types)
     status.text(f"📊 {len(all_deals)} deals setelah filter role")
 
-    # STEP 4 - Semua invoice
     status.text("📄 Mengambil data invoice...")
     all_invoices_raw = bitrix_get_all(
         "crm.invoice.list.json",
@@ -192,22 +233,19 @@ def fetch_deals_belum_invoice(start_date, end_date, allowed_types):
             invoice_deal_ids.add(deal_id)
     progress.progress(60)
 
-    # STEP 5 - Filter belum invoice
     deals_filtered = [d for d in all_deals if str(d["ID"]) not in invoice_deal_ids]
     status.text(f"📊 {len(deals_filtered)} deals belum ada invoice")
 
-    # STEP 6 - Batch user
     status.text("👤 Mengambil info user...")
     all_user_ids = [d.get("ASSIGNED_BY_ID") for d in deals_filtered]
     user_map = get_users_batch(all_user_ids)
     progress.progress(80)
 
-    # STEP 7 - Build rows
     rows = []
     for deal in deals_filtered:
-        user_id    = str(deal.get("ASSIGNED_BY_ID", ""))
-        company_id = str(deal.get("COMPANY_ID", ""))
-        closedate  = deal.get("CLOSEDATE", "")[:10] if deal.get("CLOSEDATE") else ""
+        user_id      = str(deal.get("ASSIGNED_BY_ID", ""))
+        company_id   = str(deal.get("COMPANY_ID", ""))
+        closedate    = deal.get("CLOSEDATE", "")[:10] if deal.get("CLOSEDATE") else ""
         company_info = company_map.get(company_id, {"name": "-", "type": "-"})
         rows.append({
             "Deal ID":      deal.get("ID"),
@@ -235,7 +273,6 @@ def fetch_outstanding_qty(start_date, end_date, allowed_types):
     progress = st.progress(0)
     status = st.empty()
 
-    # STEP 1 - Deals WON dengan filter CLOSEDATE
     status.text("📋 Mengambil deals WON...")
     all_deals = bitrix_get_all(
         "crm.deal.list.json",
@@ -255,16 +292,12 @@ def fetch_outstanding_qty(start_date, end_date, allowed_types):
         status.empty()
         return pd.DataFrame()
 
-    # STEP 2 - Batch company (untuk filter role)
     status.text("🏢 Mengambil info company...")
     all_company_ids = [d.get("COMPANY_ID") for d in all_deals]
     company_map = get_companies_batch(all_company_ids)
     progress.progress(25)
 
-    # STEP 3 - Filter by company type (role)
     all_deals = filter_by_company_type(all_deals, company_map, allowed_types)
-    status.text(f"📊 {len(all_deals)} deals setelah filter role")
-
     if not all_deals:
         progress.empty()
         status.empty()
@@ -272,7 +305,6 @@ def fetch_outstanding_qty(start_date, end_date, allowed_types):
 
     deal_ids_set = set(str(d["ID"]) for d in all_deals)
 
-    # STEP 4 - Invoice
     status.text("📄 Mengambil data invoice...")
     all_invoices_raw = bitrix_get_all(
         "crm.invoice.list.json",
@@ -292,7 +324,6 @@ def fetch_outstanding_qty(start_date, end_date, allowed_types):
             })
             invoice_amount_map[deal_id] += float(inv.get("PRICE", 0) or 0)
 
-    # STEP 5 - Filter deals belum full invoice
     deals_to_process = []
     for d in all_deals:
         deal_id     = str(d["ID"])
@@ -309,7 +340,6 @@ def fetch_outstanding_qty(start_date, end_date, allowed_types):
         status.empty()
         return pd.DataFrame()
 
-    # STEP 6 - Invoice product rows per invoice
     status.text("📦 Mengambil product rows invoice...")
     inv_product_map = defaultdict(list)
     all_invoice_ids = list(set(
@@ -331,13 +361,11 @@ def fetch_outstanding_qty(start_date, end_date, allowed_types):
 
     progress.progress(65)
 
-    # STEP 7 - Batch user
     status.text("👤 Mengambil info user...")
     all_user_ids = [d.get("ASSIGNED_BY_ID") for d in deals_to_process]
     user_map = get_users_batch(all_user_ids)
     progress.progress(70)
 
-    # STEP 8 - Deal product rows
     status.text(f"📦 Mengambil product rows deals... (0/{len(deals_to_process)})")
     deal_product_map = defaultdict(list)
     for i, deal in enumerate(deals_to_process):
@@ -353,7 +381,6 @@ def fetch_outstanding_qty(start_date, end_date, allowed_types):
 
     progress.progress(95)
 
-    # STEP 9 - Build rows (match by PRODUCT_NAME)
     status.text("🔨 Membangun data...")
     rows = []
     for deal in deals_to_process:
@@ -500,7 +527,7 @@ def send_email(to_email, excel_data, subject, summary_html):
     <html><body>
     <p>Halo,</p>
     {summary_html}
-    <p>Detail lengkap dapat dilihat pada file terlampir.</p>
+    <p>Detail lengkap dapat dilihat pada file di SharePoint.</p>
     <br><p>Terima kasih.</p>
     </body></html>
     """
@@ -548,8 +575,8 @@ if not st.session_state.get("logged_in"):
 # ==================== STREAMLIT UI ====================
 st.set_page_config(page_title="Bitrix24 CRM Report", page_icon="📊", layout="wide")
 
-user_email = st.session_state.get("user_email", "")
-user_role  = st.session_state.get("user_role", "PKR")
+user_email    = st.session_state.get("user_email", "")
+user_role     = st.session_state.get("user_role", "PKR")
 allowed_types = get_allowed_company_types(user_role)
 
 with st.sidebar:
@@ -592,34 +619,38 @@ if page == "📋 Deals Belum Invoice":
             df = fetch_deals_belum_invoice(start_date, end_date, allowed_types)
             st.session_state["df_belum_invoice"]    = df
             st.session_state["excel_belum_invoice"] = build_excel_belum_invoice(df)
+            st.session_state["bi_filename"] = f"Deals_Belum_Invoice_{start_date}_{end_date}.xlsx"
             st.rerun()
 
     if "df_belum_invoice" in st.session_state:
         df         = st.session_state["df_belum_invoice"]
         excel_data = st.session_state["excel_belum_invoice"]
+        filename   = st.session_state.get("bi_filename", "Deals_Belum_Invoice.xlsx")
 
         if df.empty:
             st.info("Tidak ada deals yang belum invoice pada periode ini.")
         else:
+            # Summary only — no table
             col1, col2 = st.columns(2)
             col1.metric("Total Deals", len(df))
             col2.metric("Total Amount", f"{df['Amount'].sum():,.2f}")
 
             st.divider()
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            st.divider()
+            st.info("💡 Untuk mengakses detail laporan, silakan hubungi IT Support untuk meminta akses folder SharePoint.")
 
-            col_dl, col_email = st.columns([1, 2])
-            with col_dl:
-                st.download_button(
-                    label="⬇️ Download Excel",
-                    data=excel_data,
-                    file_name="deals_belum_invoice.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            col_sp, col_email = st.columns([1, 2])
+            with col_sp:
+                if st.button("☁️ Simpan ke SharePoint", type="primary"):
+                    try:
+                        with st.spinner("Mengupload ke SharePoint..."):
+                            upload_to_sharepoint(excel_data, SP_FOLDER_DEALS, filename)
+                        st.success(f"✅ File **{filename}** berhasil disimpan ke SharePoint folder **{SP_FOLDER_DEALS}**")
+                    except Exception as e:
+                        st.error(f"❌ Gagal upload ke SharePoint: {e}")
+
             with col_email:
                 with st.form("form_email_belum_invoice"):
-                    to_email  = st.text_input("📧 Kirim ke (TO)", placeholder="email@domain.com")
+                    to_email  = st.text_input("📧 Kirim Notifikasi Email (TO)", placeholder="email@domain.com")
                     submitted = st.form_submit_button("📤 Kirim Email", type="primary")
                     if submitted:
                         if not to_email:
@@ -629,8 +660,8 @@ if page == "📋 Deals Belum Invoice":
                                 with st.spinner("Mengirim email..."):
                                     send_email(
                                         to_email, excel_data,
-                                        "Deals Belum Invoice - Bitrix24",
-                                        f"<p>Terdapat <b>{len(df)} deals</b> WON yang belum dibuatkan invoice pada periode <b>{start_date}</b> s/d <b>{end_date}</b>.</p>"
+                                        f"Deals Belum Invoice {start_date} sd {end_date}",
+                                        f"<p>Terdapat <b>{len(df)} deals</b> WON yang belum dibuatkan invoice pada periode <b>{start_date}</b> s/d <b>{end_date}</b>.</p><p>Total Amount: <b>{df['Amount'].sum():,.2f}</b></p>"
                                     )
                                 st.success(f"✅ Email berhasil dikirim ke {to_email}")
                             except Exception as e:
@@ -662,35 +693,39 @@ elif page == "📦 Outstanding Qty":
             df = fetch_outstanding_qty(start_date, end_date, allowed_types)
             st.session_state["df_outstanding"]    = df
             st.session_state["excel_outstanding"] = build_excel_outstanding(df)
+            st.session_state["os_filename"] = f"Invoice_Outstanding_{start_date}_{end_date}.xlsx"
             st.rerun()
 
     if "df_outstanding" in st.session_state:
         df         = st.session_state["df_outstanding"]
         excel_data = st.session_state["excel_outstanding"]
+        filename   = st.session_state.get("os_filename", "Invoice_Outstanding.xlsx")
 
         if df.empty:
             st.info("Tidak ada data outstanding pada periode ini.")
         else:
+            # Summary only — no table
             col1, col2, col3 = st.columns(3)
             col1.metric("Total Deals", df["Deal ID"].nunique())
             col2.metric("Total Outstanding Qty", f"{df['Outstanding Qty'].sum():,.0f}")
             col3.metric("Total Outstanding Value", f"{df['Outstanding Value'].sum():,.2f}")
 
             st.divider()
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            st.divider()
+            st.info("💡 Untuk mengakses detail laporan, silakan hubungi IT Support untuk meminta akses folder SharePoint.")
 
-            col_dl, col_email = st.columns([1, 2])
-            with col_dl:
-                st.download_button(
-                    label="⬇️ Download Excel",
-                    data=excel_data,
-                    file_name="outstanding_qty.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            col_sp, col_email = st.columns([1, 2])
+            with col_sp:
+                if st.button("☁️ Simpan ke SharePoint", type="primary"):
+                    try:
+                        with st.spinner("Mengupload ke SharePoint..."):
+                            upload_to_sharepoint(excel_data, SP_FOLDER_OUTSTANDING, filename)
+                        st.success(f"✅ File **{filename}** berhasil disimpan ke SharePoint folder **{SP_FOLDER_OUTSTANDING}**")
+                    except Exception as e:
+                        st.error(f"❌ Gagal upload ke SharePoint: {e}")
+
             with col_email:
                 with st.form("form_email_outstanding"):
-                    to_email  = st.text_input("📧 Kirim ke (TO)", placeholder="email@domain.com")
+                    to_email  = st.text_input("📧 Kirim Notifikasi Email (TO)", placeholder="email@domain.com")
                     submitted = st.form_submit_button("📤 Kirim Email", type="primary")
                     if submitted:
                         if not to_email:
@@ -700,7 +735,7 @@ elif page == "📦 Outstanding Qty":
                                 with st.spinner("Mengirim email..."):
                                     send_email(
                                         to_email, excel_data,
-                                        "Outstanding Qty - Bitrix24",
+                                        f"Invoice Outstanding {start_date} sd {end_date}",
                                         f"<p>Terdapat <b>{df['Deal ID'].nunique()} deals</b> dengan outstanding qty pada periode <b>{start_date}</b> s/d <b>{end_date}</b>.</p><p>Total Outstanding Value: <b>{df['Outstanding Value'].sum():,.2f}</b></p>"
                                     )
                                 st.success(f"✅ Email berhasil dikirim ke {to_email}")
