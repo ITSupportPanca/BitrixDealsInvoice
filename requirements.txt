@@ -3,3 +3,5 @@ pandas
 requests
 openpyxl
 urllib3
+office365-rest-python-client
+cryptography
