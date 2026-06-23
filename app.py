@@ -174,14 +174,13 @@ def get_sharepoint_context():
     tmp.close()
 
     try:
-        from office365.runtime.auth.certificate_credentials import CertificateCredential
-        credentials = CertificateCredential(
-            tenant_id=SP_TENANT_ID,
+        ctx = ClientContext(SP_SITE_URL).with_client_certificate(
+            tenant=SP_TENANT_ID,
             client_id=SP_CLIENT_ID,
+            thumbprint="",
             cert_path=tmp.name,
-            cert_password=SP_CERT_PASSWORD
+            passphrase=SP_CERT_PASSWORD
         )
-        ctx = ClientContext(SP_SITE_URL).with_credentials(credentials)
         return ctx
     finally:
         os.unlink(tmp.name)
