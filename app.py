@@ -43,6 +43,7 @@ CC_EMAILS  = [st.secrets["config"]["CC_EMAIL"]]
 SP_TENANT_ID       = st.secrets["sharepoint"]["TENANT_ID"]
 SP_CLIENT_ID       = st.secrets["sharepoint"]["CLIENT_ID"]
 SP_CERT_PASSWORD   = st.secrets["sharepoint"]["CERT_PASSWORD"]
+SP_CERT_THUMBPRINT = st.secrets["sharepoint"]["CERT_THUMBPRINT"]
 SP_SITE_URL        = st.secrets["sharepoint"]["SITE_URL"]
 SP_LIBRARY         = st.secrets["sharepoint"]["LIBRARY"]
 SP_FOLDER_DEALS    = st.secrets["sharepoint"]["FOLDER_DEALS"]
@@ -177,7 +178,7 @@ def get_sharepoint_context():
         ctx = ClientContext(SP_SITE_URL).with_client_certificate(
             tenant=SP_TENANT_ID,
             client_id=SP_CLIENT_ID,
-            thumbprint="",
+            thumbprint=SP_CERT_THUMBPRINT,
             cert_path=tmp.name,
             passphrase=SP_CERT_PASSWORD
         )
@@ -191,7 +192,6 @@ def upload_to_sharepoint(excel_data, folder_name, filename):
     folder_url = f"{SP_LIBRARY}/{folder_name}"
     target_folder = ctx.web.get_folder_by_server_relative_url(folder_url)
     target_folder.upload_file(filename, excel_data).execute_query()
-
 
 # ==================== PAGE 1: DEALS BELUM INVOICE ====================
 def fetch_deals_belum_invoice(start_date, end_date, allowed_types):
