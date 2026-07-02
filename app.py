@@ -609,7 +609,7 @@ def login_page():
                             st.success(
                                 f"✅ **Permintaan reset password berhasil dikirim!**\n\n"
                                 f"Halo **{user_name}**, tim IT Support telah menerima permintaan Anda "
-                                f"dan akan segera menghubungi anda segera dengan password baru.\n\n"
+                                f"dan akan segera menghubungi Anda dengan password baru.\n\n"
                                 f"📋 Task ID: **#{task_id}**"
                             )
                         else:
