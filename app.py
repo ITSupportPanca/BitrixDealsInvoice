@@ -22,6 +22,7 @@ from datetime import date, timedelta
 
 # ==================== CONFIG ====================
 WEBHOOK    = st.secrets["config"]["BITRIX_WEBHOOK"]
+WEBHOOK_IM = st.secrets["config"]["BITRIX_WEBHOOK_IM"]
 DELAY      = 0.1
 
 SMTP_HOST  = st.secrets["config"]["SMTP_HOST"]
@@ -579,16 +580,17 @@ def send_otp_bitrix(email, otp):
         f"Jika Anda tidak merasa melakukan login, abaikan pesan ini."
     )
 
-    url = WEBHOOK + "im.message.add.json"
+    url = WEBHOOK_IM + "im.notify.personal.add.json"
     params = {
-        "DIALOG_ID": f"user{user_id}",
+        "USER_ID": user_id,
         "MESSAGE": message,
+        "MESSAGE_OUT": message,
     }
     resp = SESSION.post(url, params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json()
     if not data.get("result"):
-        raise Exception(f"Gagal kirim pesan: {data}")
+        raise Exception(f"Gagal kirim notifikasi: {data}")
     return user_name
 
 def login_page():
