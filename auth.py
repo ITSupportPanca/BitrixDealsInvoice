@@ -38,11 +38,17 @@ def send_bitrix_otp_notification(user_id, otp_code):
     url = WEBHOOK + "im.notify.system.add.json"
     payload = {
         "USER_ID": user_id,
-        "MESSAGE": f"Kode OTP Login Streamlit App Anda: [B]{otp_code}[/B]. Berlaku selama 5 menit."
+        "MESSAGE": f"Kode OTP Login Streamlit App Anda: [B]{otp_code}[/B]\n\n*Berlaku selama 5 menit. Jangan berikan kode ini ke siapa pun.*",
+        "NOTIFY_TYPE": 4,  # Type 4 = SYSTEM notification (Lonceng)
     }
     try:
         resp = requests.post(url, json=payload, timeout=10).json()
-        return resp.get("result")
+        # Jika respon ada result (mengembalikan ID notification), berarti sukses
+        if "result" in resp and resp["result"]:
+            return True
+        else:
+            st.error(f"Bitrix Reject: {resp}")
+            return False
     except Exception as e:
         st.error(f"Gagal mengirim notifikasi OTP: {e}")
         return False
