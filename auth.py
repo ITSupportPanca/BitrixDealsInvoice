@@ -77,12 +77,6 @@ def login_page_otp(get_user_role):
                     st.session_state["otp_email"] = email
                     st.session_state["otp_user_name"] = user_name
 
-                    if send_bitrix_otp_notification(user_id, otp):
-                        st.session_state["otp_sent"] = True
-                        st.success(f"✅ Kode OTP telah dikirim ke notifikasi Bitrix24 ({user_name})!")
-                else:
-                    st.error("Email tidak ditemukan atau akun tidak aktif di Bitrix24.")
-
     # Input Kode OTP (Muncul setelah tombol Kirim diklik)
     if st.session_state.get("otp_sent"):
         st.divider()
