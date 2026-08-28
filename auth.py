@@ -7,16 +7,28 @@ import streamlit as st
 WEBHOOK = st.secrets["config"]["BITRIX_WEBHOOK"]
 
 def get_bitrix_user_by_email(email):
-    """Cari User ID Bitrix berdasarkan email"""
+    """Cari User ID Bitrix berdasarkan email secara akurat"""
     url = WEBHOOK + "user.get.json"
-    payload = {"filter[EMAIL]": email, "filter[ACTIVE]": "Y"}
+    # Pastikan email di-trim dan dipaksa lowercase biar pencarian akurat
+    clean_email = email.strip().lower()
+    
+    payload = {
+        "FILTER": {
+            "=EMAIL": clean_email,  # Gunakan '=EMAIL' agar pencarian exact match (presisi)
+            "ACTIVE": "Y"
+        }
+    }
     try:
         resp = requests.post(url, json=payload, timeout=10).json()
         users = resp.get("result", [])
-        if users:
-            u = users[0]
-            full_name = f"{u.get('NAME', '')} {u.get('LAST_NAME', '')}".strip()
-            return u.get("ID"), full_name or email
+        
+        # Loop untuk memastikan email benar-benar cocok 100%
+        for u in users:
+            user_email = str(u.get("EMAIL", "")).strip().lower()
+            if user_email == clean_email:
+                full_name = f"{u.get('NAME', '')} {u.get('LAST_NAME', '')}".strip()
+                return u.get("ID"), full_name or email
+
     except Exception as e:
         st.error(f"Gagal terhubung ke Bitrix: {e}")
     return None, None
