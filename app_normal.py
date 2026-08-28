@@ -19,6 +19,7 @@ from collections import defaultdict
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import date, timedelta
+from auth import login_page_otp
 
 # ==================== CONFIG ====================
 WEBHOOK    = st.secrets["config"]["BITRIX_WEBHOOK"]
@@ -550,85 +551,9 @@ def create_reset_password_task(email):
     except Exception as e:
         return False, str(e), email
 
-
-# ==================== LOGIN ====================
-def check_login(email, password):
-    users = st.secrets.get("users", {})
-    return users.get(email) == password
-
-def login_page():
-    st.set_page_config(page_title="Login - Bitrix24 Report", page_icon="🔐", layout="centered")
-    st.title("🔐 Login")
-    st.caption("Masukkan email dan password Anda untuk melanjutkan")
-
-    # Toggle antara Login dan Forgot Password
-    if "show_forgot" not in st.session_state:
-        st.session_state["show_forgot"] = False
-
-    if not st.session_state["show_forgot"]:
-        # ===== FORM LOGIN =====
-        with st.form("form_login"):
-            email    = st.text_input("Email", placeholder="Masukkan email Anda")
-            password = st.text_input("Password", type="password", placeholder="Masukkan password Anda")
-            submit   = st.form_submit_button("Login", type="primary")
-            if submit:
-                if check_login(email, password):
-                    st.session_state["logged_in"]  = True
-                    st.session_state["user_email"] = email
-                    st.session_state["user_role"]  = get_user_role(email)
-                    st.rerun()
-                else:
-                    st.error("Email atau password salah!")
-
-        st.divider()
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🔑 Lupa Password?", use_container_width=True):
-                st.session_state["show_forgot"] = True
-                st.rerun()
-
-    else:
-        # ===== FORM FORGOT PASSWORD =====
-        st.subheader("🔑 Lupa Password")
-        st.caption("Masukkan email Anda dan tim IT Support akan segera membantu reset password.")
-
-        with st.form("form_forgot"):
-            email_reset = st.text_input("Email", placeholder="Masukkan email yang terdaftar")
-            submitted   = st.form_submit_button("📨 Kirim Permintaan Reset", type="primary")
-            if submitted:
-                if not email_reset:
-                    st.error("Email tidak boleh kosong!")
-                else:
-                    users = st.secrets.get("users", {})
-                    if email_reset not in users:
-                        st.error(f"Email **{email_reset}** tidak terdaftar di sistem.")
-                    else:
-                        with st.spinner("Mengirim permintaan..."):
-                            success, task_id, user_name = create_reset_password_task(email_reset)
-                        if success:
-                            st.success(
-                                f"✅ **Permintaan reset password berhasil dikirim!**\n\n"
-                                f"Halo **{user_name}**, tim IT Support telah menerima permintaan Anda "
-                                f"dan akan segera menghubungi Anda dengan password baru.\n\n"
-                                f"📋 Task ID: **#{task_id}**"
-                            )
-                        else:
-                            st.error(
-                                f"❌ Gagal mengirim permintaan. Silakan hubungi IT Support secara langsung.\n\n"
-                                f"Error: {task_id}"
-                            )
-
-        st.divider()
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("← Kembali ke Login", use_container_width=True):
-                st.session_state["show_forgot"] = False
-                st.rerun()
-
-if not st.session_state.get("logged_in"):
-    login_page()
+    if not st.session_state.get("logged_in"):
+    login_page_otp(get_user_role)
     st.stop()
-
 # ==================== STREAMLIT UI ====================
 st.set_page_config(page_title="Bitrix24 CRM Report", page_icon="📊", layout="wide")
 
