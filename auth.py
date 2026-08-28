@@ -77,6 +77,10 @@ def login_page_otp(get_user_role):
                     st.session_state["otp_email"] = email
                     st.session_state["otp_user_name"] = user_name
 
+                    if send_bitrix_otp_notification(user_id, otp):
+                        st.session_state["otp_sent"] = True
+
+
     # Input Kode OTP (Muncul setelah tombol Kirim diklik)
     if st.session_state.get("otp_sent"):
         st.divider()
