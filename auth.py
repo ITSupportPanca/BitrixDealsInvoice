@@ -3,9 +3,8 @@ import time
 import requests
 import streamlit as st
 
-# Ambil URL kedua Webhook dari Secrets
+# Gunakan Webhook utama yang sudah berjalan
 WEBHOOK_MAIN = st.secrets["config"]["BITRIX_WEBHOOK"]
-WEBHOOK_IM = st.secrets["config"].get("BITRIX_WEBHOOK_IM", WEBHOOK_MAIN)
 
 def get_bitrix_user_by_email(email):
     """Cari User ID Bitrix berdasarkan email"""
@@ -30,12 +29,21 @@ def get_bitrix_user_by_email(email):
     return None, None
 
 def send_bitrix_otp_notification(user_id, otp_code):
-    """Kirim notifikasi lonceng menggunakan Webhook khusus IM"""
-    url = WEBHOOK_IM + "im.notify.system.add.json"
+    """
+    Mengirim OTP via Notifikasi Task Bitrix24 (bypass limitasi REST API Chat/IM)
+    """
+    url = WEBHOOK_MAIN + "task.item.add.json"
+    
+    # Payload Task otomatis memicu notifikasi lonceng ke user penerima (RESPONSIBLE_ID)
     payload = {
-        "USER_ID": user_id,
-        "MESSAGE": f"Kode OTP Login Streamlit App Anda: [B]{otp_code}[/B]. Berlaku selama 5 menit."
+        "ARFIELDS": {
+            "TITLE": f"🔑 KODE OTP STREAMLIT: {otp_code}",
+            "DESCRIPTION": f"Kode OTP Login Aplikasi Anda adalah: {otp_code}\n\nKode ini berlaku selama 5 menit.",
+            "RESPONSIBLE_ID": user_id,
+            "DEADLINE": time.strftime('%Y-%m-%dT%H:%M:%S+07:00', time.localtime(time.time() + 300))
+        }
     }
+    
     try:
         resp = requests.post(url, json=payload, timeout=10).json()
         if "result" in resp and resp["result"]:
