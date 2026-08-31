@@ -622,7 +622,7 @@ Kemungkinan penyebab:
                 )
             with col_email:
                 with st.form("form_email_belum_invoice"):
-                    to_email  = st.text_input("📧 Kirim ke (TO)", placeholder="email@domain.com")
+                    to_email  = st.text_input("📧 Kirim ke (TO)", placeholder="masukkan email penerima")
                     submitted = st.form_submit_button("📤 Kirim Email", type="primary")
                     if submitted:
                         if not to_email:
@@ -720,7 +720,7 @@ Kemungkinan penyebab:
                 )
             with col_email:
                 with st.form("form_email_outstanding"):
-                    to_email  = st.text_input("📧 Kirim ke (TO)", placeholder="email@domain.com")
+                    to_email  = st.text_input("📧 Kirim ke (TO)", placeholder="masukkan email penerima")
                     submitted = st.form_submit_button("📤 Kirim Email", type="primary")
                     if submitted:
                         if not to_email:
