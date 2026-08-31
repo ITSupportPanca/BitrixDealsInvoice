@@ -561,7 +561,7 @@ if page == "📋 Deals Belum Invoice":
             key="bi_end"
         )
 
-    if st.button("🔄 Ambil Data", type="primary"):
+    if st.button("🔄 Generate Data", type="primary"):
         if start_date > end_date:
             st.error("Start Date tidak boleh lebih besar dari End Date!")
         else:
@@ -658,7 +658,7 @@ elif page == "📦 Outstanding Qty":
             key="os_end"
         )
 
-    if st.button("🔄 Ambil Data", type="primary"):
+    if st.button("🔄 Generate Data", type="primary"):
         if start_date > end_date:
             st.error("Start Date tidak boleh lebih besar dari End Date!")
         else:
