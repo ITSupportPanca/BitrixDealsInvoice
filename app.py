@@ -642,7 +642,7 @@ Kemungkinan penyebab:
 # ==================== PAGE 2 ====================
 elif page == "📦 Outstanding Qty":
     st.title("📦 Outstanding Qty")
-    st.caption("Deals WON dengan qty yang belum sepenuhnya diinvoice")
+    st.caption("Invoice yang masih outstanding")
 
     col_s, col_e = st.columns(2)
     with col_s:
