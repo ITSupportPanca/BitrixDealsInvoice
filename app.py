@@ -4,7 +4,7 @@ Halaman 1: Deals Belum Invoice
 Halaman 2: Outstanding Qty
 Role: super_admin, PKR, PKL
 """
-
+st.session_state.clear()
 import streamlit as st
 import requests
 import pandas as pd
