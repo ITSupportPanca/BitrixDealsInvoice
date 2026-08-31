@@ -10,6 +10,9 @@ import requests
 import pandas as pd
 import smtplib
 import time
+if st.query_params.get("reset"):
+    st.session_state.clear()
+    st.rerun()
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
