@@ -33,6 +33,24 @@ EMAIL_FROM = st.secrets["config"]["EMAIL_FROM"]
 CC_EMAILS  = [st.secrets["config"]["CC_EMAIL"]]
 # ================================================
 
+def get_user_role(email):
+    roles = st.secrets.get('roles', {})
+    return roles.get(email, 'PKR')
+
+def get_allowed_company_types(role):
+    role_types = st.secrets.get('role_company_types', {})
+    allowed = role_types.get(role, [])
+    if role == 'super_admin':
+        return None
+    return list(allowed)
+
+# ==================== LOGIN CHECK ====================
+if not st.session_state.get('logged_in'):
+    login_page_otp(get_user_role)
+    st.stop()
+# =====================================================
+
+
 
 
 
